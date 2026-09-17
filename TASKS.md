@@ -63,28 +63,28 @@ Implement exact financial domain behavior without infrastructure dependencies.
 
 ### Tasks
 
-* [ ] Money value object
-* [ ] Money parsing
-* [ ] Money serialization
-* [ ] Money arithmetic
-* [ ] Currency validation
-* [ ] Overflow protection
-* [ ] Wallet aggregate
-* [ ] Wallet creation
-* [ ] Wallet debit
-* [ ] Wallet credit
-* [ ] WagerTransaction
-* [ ] WalletLedgerEntry
-* [ ] Domain errors
-* [ ] Transaction state machine
+* [x] Money value object
+* [x] Money parsing
+* [x] Money serialization
+* [x] Money arithmetic
+* [x] Currency validation
+* [x] Overflow protection
+* [x] Wallet aggregate
+* [x] Wallet creation
+* [x] Wallet debit
+* [x] Wallet credit
+* [x] WagerTransaction
+* [x] WalletLedgerEntry
+* [x] Domain errors
+* [x] Transaction state machine
 
 ### Verification
 
-* [ ] Money unit tests
-* [ ] Wallet invariant tests
-* [ ] Transaction transition tests
-* [ ] Operation rule tests
-* [ ] `go test ./...`
+* [x] Money unit tests
+* [x] Wallet invariant tests
+* [x] Transaction transition tests
+* [x] Operation rule tests
+* [x] `go test ./...`
 
 ---
 
