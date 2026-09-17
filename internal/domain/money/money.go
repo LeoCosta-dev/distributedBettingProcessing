@@ -13,7 +13,7 @@ var (
 	ErrInvalidCurrency  = errors.New("invalid currency")
 	ErrCurrencyMismatch = errors.New("currency mismatch")
 	ErrOverflow         = errors.New("monetary overflow")
-	amountPattern       = regexp.MustCompile(`^(0|[1-9][0-9]*)(\.[0-9]{2})?$`)
+	amountPattern       = regexp.MustCompile(`^(0|[1-9][0-9]*)\.[0-9]{2}$`)
 	currencyPattern     = regexp.MustCompile(`^[A-Z]{3}$`)
 )
 
@@ -34,9 +34,7 @@ func New(amount string, currency string) (Money, error) {
 	wholePart, fraction := amount, int64(0)
 	if dot := indexByte(amount, '.'); dot >= 0 {
 		wholePart = amount[:dot]
-		var f int64
-		_, _ = fmt.Sscan(amount[dot+1:], &f)
-		fraction = f
+		fraction = int64(amount[dot+1]-'0')*10 + int64(amount[dot+2]-'0')
 	}
 	if wholePart == "" {
 		return Money{}, ErrInvalidAmount

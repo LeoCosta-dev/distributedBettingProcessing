@@ -2,6 +2,7 @@ package money
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"testing"
 )
@@ -25,9 +26,30 @@ func TestMoneyParsingAndJSON(t *testing.T) {
 }
 
 func TestMoneyRejectsInvalidExternalAmounts(t *testing.T) {
-	for _, input := range []string{"-1.00", "1.0", "1.001", "1e2", "01.00", "", "abc"} {
+	for _, input := range []string{
+		"25", "1", "0", "25.0", "25.000", "25.001",
+		"-1.00", "1e2", "01.00", "", "abc",
+	} {
 		if _, err := New(input, "BRL"); !errors.Is(err, ErrInvalidAmount) {
 			t.Errorf("%q: got %v", input, err)
+		}
+	}
+}
+
+func TestMoneyParsingPreservesEveryCent(t *testing.T) {
+	for _, whole := range []int{0, 1, 25} {
+		for cent := 0; cent < 100; cent++ {
+			input := fmt.Sprintf("%d.%02d", whole, cent)
+			want := int64(whole*100 + cent)
+			t.Run(input, func(t *testing.T) {
+				got, err := New(input, "BRL")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Minor() != want || got.Amount() != input {
+					t.Fatalf("%q: minor=%d amount=%q, want minor=%d amount=%q", input, got.Minor(), got.Amount(), want, input)
+				}
+			})
 		}
 	}
 }
