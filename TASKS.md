@@ -127,24 +127,28 @@ Implement all financial operations atomically.
 
 ### Tasks
 
-* [ ] wallet opening
-* [ ] BET
-* [ ] WIN
-* [ ] LOSS
-* [ ] REFUND
-* [ ] ROLLBACK
-* [ ] insufficient balance rejection
-* [ ] reference validation
-* [ ] reversal protection
-* [ ] atomic balance + transaction + ledger
+* [x] wallet opening
+* [x] BET
+* [x] WIN
+* [x] LOSS
+* [x] REFUND
+* [x] ROLLBACK
+* [x] insufficient balance rejection
+* [x] reference validation
+* [x] reversal protection
+* [x] atomic balance + transaction + ledger
 
 ### Verification
 
-* [ ] financial integration tests
-* [ ] ledger reconstruction
-* [ ] reconciliation
-* [ ] zero-value rules
-* [ ] reversal tests
+* [x] financial integration tests
+* [x] ledger reconstruction
+* [x] reconciliation
+* [x] zero-value rules
+* [x] reversal tests
+
+> `FAILED` permanece reservado para falha permanente de infraestrutura registrada;
+> no Loop 3, falhas de infraestrutura abortam a transação. O registro/recovery
+> desse estado depende dos loops de messaging e recovery.
 
 ---
 
@@ -434,13 +438,13 @@ Documentation
 # Current Loop
 
 ```text
-Loop 2 — Database Foundation
+Loop 3 — Financial Processing
 ```
 
 # Current Status
 
 ```text
-LOOP 2 COMPLETE — PENDING HUMAN REVIEW
+IMPLEMENTED — PENDING HUMAN REVIEW
 ```
 
 # Rules

@@ -44,6 +44,12 @@ func New(id, externalID, providerID, walletID string, typ Type, amount money.Mon
 	}
 	return Transaction{id: id, externalID: externalID, providerID: providerID, walletID: walletID, typ: typ, amount: amount, state: Pending}, nil
 }
+func NewOpening(id, walletID string, amount money.Money) (Transaction, error) {
+	if id == "" || walletID == "" || amount.Minor() <= 0 || amount.Currency() == "" {
+		return Transaction{}, ErrInvalidTransaction
+	}
+	return Transaction{id: id, externalID: id, providerID: "internal", walletID: walletID, typ: Opening, amount: amount, state: Pending}, nil
+}
 func (t Transaction) ID() string          { return t.id }
 func (t Transaction) ExternalID() string  { return t.externalID }
 func (t Transaction) ProviderID() string  { return t.providerID }

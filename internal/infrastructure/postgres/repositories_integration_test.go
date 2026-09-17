@@ -32,7 +32,7 @@ func TestRepositoriesAgainstPostgres(t *testing.T) {
 		t.Fatalf("wallet: %+v, %v", w, err)
 	}
 	transactions := NewWagerTransactionRepository(db)
-	if err := transactions.Insert(ctx, WagerTransactionRecord{ID: txID, ExternalID: "integration-external-" + txID.String(), ProviderID: "integration-provider", WalletID: walletID, Type: "BET", Amount: 8000, Currency: "BRL", State: "PROCESSED", IdempotencyKey: "integration-idem-" + txID.String(), PayloadHash: "integration-hash", CreatedAt: now, UpdatedAt: now}); err != nil {
+	if err := transactions.Insert(ctx, WagerTransactionRecord{ID: txID, ExternalID: "integration-external-" + txID.String(), ProviderID: "integration-provider", WalletID: walletID, PlayerID: "integration-player-" + walletID.String(), GameID: "integration-game", RoundID: "integration-round", Type: "BET", Amount: 8000, Currency: "BRL", State: "PROCESSED", IdempotencyKey: "integration-idem-" + txID.String(), PayloadHash: "integration-hash", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := transactions.FindByExternal(ctx, "integration-provider", "integration-external-"+txID.String()); err != nil || got.ID != txID {
@@ -75,5 +75,32 @@ func TestRepositoriesAgainstPostgres(t *testing.T) {
 	var commitCount int
 	if err := db.pool.QueryRow(ctx, `SELECT count(*) FROM inbox WHERE consumer_name='commit-consumer' AND message_id=$1`, commitMessage).Scan(&commitCount); err != nil || commitCount != 1 {
 		t.Fatalf("commit not persisted: %d, %v", commitCount, err)
+	}
+
+	brokenWalletID := uuid.New()
+	if err := wallets.Insert(ctx, WalletRecord{ID: brokenWalletID, PlayerID: "broken-player-" + brokenWalletID.String(), Currency: "BRL", Balance: 0, Version: 1, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	entries := []struct {
+		typ                  string
+		value, before, after int64
+		direction            string
+	}{
+		{"WIN", 1000, 0, 1000, "CREDIT"},
+		{"BET", 1000, 1000, 0, "DEBIT"},
+		{"WIN", 500, 500, 1000, "CREDIT"},
+		{"BET", 500, 1000, 500, "DEBIT"},
+	}
+	for i, item := range entries {
+		txID := uuid.New()
+		if err := transactions.Insert(ctx, WagerTransactionRecord{ID: txID, ExternalID: "broken-" + txID.String(), ProviderID: "broken-provider", WalletID: brokenWalletID, PlayerID: "broken-player-" + brokenWalletID.String(), GameID: "broken-game", RoundID: "broken-round", Type: item.typ, Amount: item.value, Currency: "BRL", State: "PROCESSED", IdempotencyKey: "broken-idem-" + txID.String(), PayloadHash: "broken-hash-" + txID.String(), CreatedAt: now.Add(time.Duration(i) * time.Second), UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := NewLedgerRepository(db).Insert(ctx, LedgerRecord{ID: uuid.New(), WalletID: brokenWalletID, TransactionID: txID, Direction: item.direction, Value: item.value, Currency: "BRL", BalanceBefore: item.before, BalanceAfter: item.after, Timestamp: now.Add(time.Duration(i) * time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := NewLedgerRepository(db).Reconstruct(ctx, brokenWalletID); !errors.Is(err, ErrLedgerInconsistent) {
+		t.Fatalf("broken ledger was reconstructed: %v", err)
 	}
 }
