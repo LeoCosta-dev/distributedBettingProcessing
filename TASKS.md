@@ -96,26 +96,26 @@ Persist the financial model with database-enforced invariants.
 
 ### Tasks
 
-* [ ] wallets table
-* [ ] wager_transactions table
-* [ ] wallet_ledger_entries table
-* [ ] inbox table
-* [ ] outbox table
-* [ ] constraints
-* [ ] unique indexes
-* [ ] immutable ledger protection
-* [ ] migrations
-* [ ] migration rollback
-* [ ] pgx repositories
+* [x] wallets table
+* [x] wager_transactions table
+* [x] wallet_ledger_entries table
+* [x] inbox table
+* [x] outbox table
+* [x] constraints
+* [x] unique indexes
+* [x] immutable ledger protection
+* [x] migrations
+* [x] migration rollback
+* [x] pgx repositories
 
 ### Verification
 
-* [ ] migrations apply
-* [ ] migrations rollback
-* [ ] uniqueness constraints verified
-* [ ] ledger mutation rejected
-* [ ] invalid balance rejected
-* [ ] integration tests pass
+* [x] migrations apply
+* [x] migrations rollback
+* [x] uniqueness constraints verified
+* [x] ledger mutation rejected
+* [x] invalid balance rejected
+* [x] integration tests pass
 
 ---
 
@@ -434,13 +434,13 @@ Documentation
 # Current Loop
 
 ```text
-Loop 0 — Project Foundation
+Loop 2 — Database Foundation
 ```
 
 # Current Status
 
 ```text
-LOOP 0 COMPLETE
+LOOP 2 COMPLETE — PENDING HUMAN REVIEW
 ```
 
 # Rules
