@@ -374,6 +374,13 @@ The same canonicalization implementation/rules must be shared between HTTP and S
 
 The algorithm must be documented and covered by tests.
 
+The current canonical representation is JSON produced from the ordered business
+fields `externalId`, `providerId`, `walletId`, `playerId`, `gameId`, `roundId`,
+`referenceExternalId` (when present), `type` and the exact `{amount,currency}`
+money value. The internal request ID, idempotency key, caller-provided hash and
+transport metadata are excluded. The payload hash is the lowercase hexadecimal
+SHA-256 digest of that canonical JSON.
+
 ---
 
 # 13. Ledger

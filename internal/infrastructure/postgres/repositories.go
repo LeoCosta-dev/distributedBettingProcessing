@@ -64,6 +64,8 @@ func (r *WalletRepository) UpdateBalance(ctx context.Context, id uuid.UUID, bala
 
 type WagerTransactionRepository struct{ db *Repository }
 
+const wagerTransactionColumns = `id,external_id,provider_id,wallet_id,player_id,game_id,round_id,type,amount,currency,state,idempotency_key,payload_hash,result,reference_external_id,created_at,updated_at`
+
 func NewWagerTransactionRepository(db *Repository) *WagerTransactionRepository {
 	return &WagerTransactionRepository{db: db}
 }
@@ -76,9 +78,28 @@ func (r *WagerTransactionRepository) Insert(ctx context.Context, w WagerTransact
 	return err
 }
 func (r *WagerTransactionRepository) FindByExternal(ctx context.Context, provider, external string) (WagerTransactionRecord, error) {
+	return r.find(ctx, `SELECT `+wagerTransactionColumns+` FROM wager_transactions WHERE provider_id=$1 AND external_id=$2`, provider, external)
+}
+func (r *WagerTransactionRepository) FindByID(ctx context.Context, id uuid.UUID) (WagerTransactionRecord, error) {
+	return r.find(ctx, `SELECT `+wagerTransactionColumns+` FROM wager_transactions WHERE id=$1`, id)
+}
+func (r *WagerTransactionRepository) FindByIdempotency(ctx context.Context, provider, key string) (WagerTransactionRecord, error) {
+	return r.find(ctx, `SELECT `+wagerTransactionColumns+` FROM wager_transactions WHERE provider_id=$1 AND idempotency_key=$2`, provider, key)
+}
+func (r *WagerTransactionRepository) CountByExternal(ctx context.Context, provider, external string) (int64, error) {
+	var count int64
+	err := r.db.exec.QueryRow(ctx, `SELECT count(*) FROM wager_transactions WHERE provider_id=$1 AND external_id=$2`, provider, external).Scan(&count)
+	return count, err
+}
+func (r *WagerTransactionRepository) CountByIdempotency(ctx context.Context, provider, key string) (int64, error) {
+	var count int64
+	err := r.db.exec.QueryRow(ctx, `SELECT count(*) FROM wager_transactions WHERE provider_id=$1 AND idempotency_key=$2`, provider, key).Scan(&count)
+	return count, err
+}
+func (r *WagerTransactionRepository) find(ctx context.Context, query string, args ...any) (WagerTransactionRecord, error) {
 	var w WagerTransactionRecord
 	var reference *string
-	err := r.db.exec.QueryRow(ctx, `SELECT id,external_id,provider_id,wallet_id,player_id,game_id,round_id,type,amount,currency,state,idempotency_key,payload_hash,result,reference_external_id,created_at,updated_at FROM wager_transactions WHERE provider_id=$1 AND external_id=$2`, provider, external).Scan(&w.ID, &w.ExternalID, &w.ProviderID, &w.WalletID, &w.PlayerID, &w.GameID, &w.RoundID, &w.Type, &w.Amount, &w.Currency, &w.State, &w.IdempotencyKey, &w.PayloadHash, &w.Result, &reference, &w.CreatedAt, &w.UpdatedAt)
+	err := r.db.exec.QueryRow(ctx, query, args...).Scan(&w.ID, &w.ExternalID, &w.ProviderID, &w.WalletID, &w.PlayerID, &w.GameID, &w.RoundID, &w.Type, &w.Amount, &w.Currency, &w.State, &w.IdempotencyKey, &w.PayloadHash, &w.Result, &reference, &w.CreatedAt, &w.UpdatedAt)
 	if reference != nil {
 		w.ReferenceExternalID = *reference
 	}
@@ -96,6 +117,11 @@ func (r *LedgerRepository) Count(ctx context.Context, walletID uuid.UUID) (int64
 	var n int64
 	err := r.db.exec.QueryRow(ctx, `SELECT count(*) FROM wallet_ledger_entries WHERE wallet_id=$1`, walletID).Scan(&n)
 	return n, err
+}
+func (r *LedgerRepository) CountByTransaction(ctx context.Context, transactionID uuid.UUID) (int64, error) {
+	var count int64
+	err := r.db.exec.QueryRow(ctx, `SELECT count(*) FROM wallet_ledger_entries WHERE transaction_id=$1`, transactionID).Scan(&count)
+	return count, err
 }
 func (r *LedgerRepository) Reconstruct(ctx context.Context, walletID uuid.UUID) (int64, error) {
 	var currency string
@@ -188,6 +214,11 @@ func (r *OutboxRepository) InsertWithMetadata(ctx context.Context, eventID uuid.
 func (r *OutboxRepository) CountByTypeAndAggregate(ctx context.Context, eventType string, aggregateID uuid.UUID) (int64, error) {
 	var count int64
 	err := r.db.exec.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE event_type=$1 AND aggregate_id=$2`, eventType, aggregateID).Scan(&count)
+	return count, err
+}
+func (r *OutboxRepository) CountByTypeAndCausation(ctx context.Context, eventType, causationID string) (int64, error) {
+	var count int64
+	err := r.db.exec.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE event_type=$1 AND causation_id=$2`, eventType, causationID).Scan(&count)
 	return count, err
 }
 func nullableString(value string) any {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/domain/ledger"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/domain/money"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/domain/wager"
@@ -17,8 +18,10 @@ import (
 )
 
 var (
-	ErrInvalidCommand   = errors.New("invalid financial command")
-	ErrReferenceInvalid = errors.New("invalid reference")
+	ErrInvalidCommand      = errors.New("invalid financial command")
+	ErrReferenceInvalid    = errors.New("invalid reference")
+	ErrIdempotencyConflict = errors.New("idempotency conflict")
+	ErrReplayUnavailable   = errors.New("persisted idempotency result unavailable")
 )
 
 const legacyIdentity = "legacy"
@@ -76,11 +79,16 @@ func (s *Service) OpenWallet(ctx context.Context, id uuid.UUID, playerID string,
 			return err
 		}
 		externalID := "opening-" + id.String()
+		openingResult := Result{TransactionID: openingID, State: wager.Processed, Balance: opening.Minor(), Amount: opening}
+		resultData, err := marshalResult(openingResult)
+		if err != nil {
+			return err
+		}
 		if err := postgres.NewWagerTransactionRepository(tx).Insert(ctx, postgres.WagerTransactionRecord{
 			ID: openingID, ExternalID: externalID, ProviderID: "internal", WalletID: id,
 			PlayerID: playerID, GameID: "internal", RoundID: "opening", Type: string(wager.Opening), Amount: opening.Minor(),
 			Currency: opening.Currency(), State: string(wager.Processed), IdempotencyKey: externalID,
-			PayloadHash: externalID, CreatedAt: now, UpdatedAt: now,
+			PayloadHash: externalID, Result: resultData, CreatedAt: now, UpdatedAt: now,
 		}); err != nil {
 			return err
 		}
@@ -92,46 +100,70 @@ func (s *Service) OpenWallet(ctx context.Context, id uuid.UUID, playerID string,
 		if err := postgres.NewLedgerRepository(tx).Insert(ctx, ledgerRecord(entry)); err != nil {
 			return err
 		}
-		result := Result{TransactionID: openingID, State: wager.Processed, Balance: opening.Minor(), Amount: opening}
-		return insertFinancialEvents(ctx, tx, wager.Opening, id, result, 1, now, externalID, true)
+		return insertFinancialEvents(ctx, tx, wager.Opening, id, openingResult, 1, now, externalID, true)
 	})
 }
 
 func (s *Service) Process(ctx context.Context, cmd Command, now time.Time) (Result, error) {
 	var result Result
-	if cmd.PlayerID == legacyIdentity || cmd.GameID == legacyIdentity || cmd.RoundID == legacyIdentity {
-		return result, ErrInvalidCommand
+	if err := validateCommand(cmd); err != nil {
+		return result, err
 	}
-	err := s.db.WithTx(ctx, func(ctx context.Context, tx *postgres.Repository) error {
+	payloadHash, err := canonicalPayloadHash(cmd)
+	if err != nil {
+		return result, err
+	}
+	cmd.PayloadHash = payloadHash
+	err = s.db.WithTx(ctx, func(ctx context.Context, tx *postgres.Repository) error {
+		tr := postgres.NewWagerTransactionRepository(tx)
+		existing, found, err := findExistingTransaction(ctx, tr, cmd)
+		if err != nil {
+			return err
+		}
+		if found {
+			result, err = replayResult(existing)
+			return err
+		}
+
 		wr := postgres.NewWalletRepository(tx)
 		w, err := wr.FindForUpdate(ctx, cmd.WalletID)
 		if err != nil {
+			return err
+		}
+		// A concurrent transaction may have committed after the first lookup
+		// while this request waited for the wallet lock. Resolve it again before
+		// applying any financial mutation.
+		existing, found, err = findExistingTransaction(ctx, tr, cmd)
+		if err != nil {
+			return err
+		}
+		if found {
+			result, err = replayResult(existing)
 			return err
 		}
 		txDomain, err := wager.New(cmd.ID.String(), cmd.ExternalID, cmd.ProviderID, cmd.WalletID.String(), cmd.Type, cmd.Amount)
 		if err != nil {
 			return err
 		}
-		if cmd.PlayerID == "" || cmd.GameID == "" || cmd.RoundID == "" {
-			return ErrInvalidCommand
-		}
 		if cmd.PlayerID != w.PlayerID {
 			return persistRejected(ctx, tx, cmd, w, now, txDomain, &result)
 		}
+		var reference *postgres.WagerTransactionRecord
 		if cmd.Type == wager.Refund || cmd.Type == wager.Rollback {
 			if cmd.ReferenceExternalID == "" {
 				return persistPendingReference(ctx, tx, cmd, w, now, txDomain, &result)
 			}
-			reference, findErr := postgres.NewWagerTransactionRepository(tx).FindByExternal(ctx, cmd.ProviderID, cmd.ReferenceExternalID)
+			foundReference, findErr := tr.FindByExternal(ctx, cmd.ProviderID, cmd.ReferenceExternalID)
 			if errors.Is(findErr, pgx.ErrNoRows) {
 				return persistPendingReference(ctx, tx, cmd, w, now, txDomain, &result)
 			}
 			if findErr != nil {
 				return findErr
 			}
-			if !validReference(cmd, reference) {
+			if !validReference(cmd, foundReference) {
 				return persistRejected(ctx, tx, cmd, w, now, txDomain, &result)
 			}
+			reference = &foundReference
 		}
 
 		before := w.Balance
@@ -149,10 +181,6 @@ func (s *Service) Process(ctx context.Context, cmd Command, now time.Time) (Resu
 		case wager.Win, wager.Refund:
 			direction, operationErr = ledger.Credit, domainWallet.Credit(cmd.Amount)
 		case wager.Rollback:
-			reference, findErr := postgres.NewWagerTransactionRepository(tx).FindByExternal(ctx, cmd.ProviderID, cmd.ReferenceExternalID)
-			if findErr != nil {
-				return findErr
-			}
 			if reference.Type == string(wager.Bet) {
 				direction, operationErr = ledger.Credit, domainWallet.Credit(cmd.Amount)
 			} else {
@@ -173,7 +201,7 @@ func (s *Service) Process(ctx context.Context, cmd Command, now time.Time) (Resu
 			return err
 		}
 		result = Result{TransactionID: cmd.ID, State: state, Balance: after, Amount: cmd.Amount}
-		if err := insertTransaction(ctx, tx, cmd, state, now); err != nil {
+		if err := insertTransaction(ctx, tx, cmd, result, now); err != nil {
 			return err
 		}
 		if state == wager.Processed && movement > 0 {
@@ -209,7 +237,16 @@ func (s *Service) Process(ctx context.Context, cmd Command, now time.Time) (Resu
 		}
 		return insertEvent(ctx, tx, "WagerTransactionRejected", cmd.Type, cmd.ID, cmd.WalletID, result, version, now, cmd.IdempotencyKey)
 	})
-	return result, err
+	if err == nil {
+		return result, nil
+	}
+	if !isKnownIdentityViolation(err) {
+		return Result{}, err
+	}
+	if isReversalIdentityViolation(err) {
+		return Result{}, ErrIdempotencyConflict
+	}
+	return s.resolveIdentityConflict(ctx, cmd)
 }
 
 func (s *Service) Reconcile(ctx context.Context, walletID uuid.UUID) (Reconciliation, error) {
@@ -224,14 +261,124 @@ func (s *Service) Reconcile(ctx context.Context, walletID uuid.UUID) (Reconcilia
 	return Reconciliation{WalletBalance: w.Balance, LedgerBalance: ledgerBalance, Consistent: w.Balance == ledgerBalance}, nil
 }
 
+func validateCommand(cmd Command) error {
+	if cmd.ID == uuid.Nil || cmd.WalletID == uuid.Nil || cmd.ExternalID == "" || cmd.ProviderID == "" || cmd.PlayerID == "" || cmd.GameID == "" || cmd.RoundID == "" || cmd.IdempotencyKey == "" {
+		return ErrInvalidCommand
+	}
+	if cmd.PlayerID == legacyIdentity || cmd.GameID == legacyIdentity || cmd.RoundID == legacyIdentity {
+		return ErrInvalidCommand
+	}
+	return nil
+}
+
+func findExistingTransaction(ctx context.Context, repository *postgres.WagerTransactionRepository, cmd Command) (postgres.WagerTransactionRecord, bool, error) {
+	byID, err := repository.FindByID(ctx, cmd.ID)
+	if err == nil {
+		if byID.IdempotencyKey != cmd.IdempotencyKey || !sameBusinessPayload(byID, cmd) {
+			return postgres.WagerTransactionRecord{}, false, ErrIdempotencyConflict
+		}
+		if byID.PayloadHash != cmd.PayloadHash {
+			return postgres.WagerTransactionRecord{}, false, ErrReplayUnavailable
+		}
+		return byID, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return postgres.WagerTransactionRecord{}, false, err
+	}
+
+	byKey, err := repository.FindByIdempotency(ctx, cmd.ProviderID, cmd.IdempotencyKey)
+	if err == nil {
+		if !sameBusinessPayload(byKey, cmd) {
+			return postgres.WagerTransactionRecord{}, false, ErrIdempotencyConflict
+		}
+		if byKey.PayloadHash != cmd.PayloadHash {
+			return postgres.WagerTransactionRecord{}, false, ErrReplayUnavailable
+		}
+		return byKey, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return postgres.WagerTransactionRecord{}, false, err
+	}
+
+	byExternal, err := repository.FindByExternal(ctx, cmd.ProviderID, cmd.ExternalID)
+	if err == nil {
+		if byExternal.IdempotencyKey != cmd.IdempotencyKey || !sameBusinessPayload(byExternal, cmd) {
+			return postgres.WagerTransactionRecord{}, false, ErrIdempotencyConflict
+		}
+		if byExternal.PayloadHash != cmd.PayloadHash {
+			return postgres.WagerTransactionRecord{}, false, ErrReplayUnavailable
+		}
+		return byExternal, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return postgres.WagerTransactionRecord{}, false, err
+	}
+	return postgres.WagerTransactionRecord{}, false, nil
+}
+
+func (s *Service) resolveIdentityConflict(ctx context.Context, cmd Command) (Result, error) {
+	var result Result
+	err := s.db.WithTx(ctx, func(ctx context.Context, tx *postgres.Repository) error {
+		existing, found, err := findExistingTransaction(ctx, postgres.NewWagerTransactionRepository(tx), cmd)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return ErrIdempotencyConflict
+		}
+		result, err = replayResult(existing)
+		return err
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	return result, nil
+}
+
+func isKnownIdentityViolation(err error) bool {
+	var postgresErr *pgconn.PgError
+	if !errors.As(err, &postgresErr) || postgresErr.Code != "23505" {
+		return false
+	}
+	switch postgresErr.ConstraintName {
+	case "wager_transactions_pkey", "wager_transactions_provider_id_external_id_key", "wager_transactions_provider_id_idempotency_key_key", "wager_transactions_reversal_idx":
+		return true
+	default:
+		return false
+	}
+}
+
+func isReversalIdentityViolation(err error) bool {
+	var postgresErr *pgconn.PgError
+	return errors.As(err, &postgresErr) && postgresErr.Code == "23505" && postgresErr.ConstraintName == "wager_transactions_reversal_idx"
+}
+
+func sameBusinessPayload(record postgres.WagerTransactionRecord, cmd Command) bool {
+	return record.ProviderID == cmd.ProviderID && record.ExternalID == cmd.ExternalID && record.WalletID == cmd.WalletID && record.PlayerID == cmd.PlayerID && record.GameID == cmd.GameID && record.RoundID == cmd.RoundID && record.Type == string(cmd.Type) && record.Amount == cmd.Amount.Minor() && record.Currency == cmd.Amount.Currency() && record.ReferenceExternalID == cmd.ReferenceExternalID
+}
+
+func replayResult(record postgres.WagerTransactionRecord) (Result, error) {
+	if len(record.Result) == 0 {
+		return Result{}, ErrReplayUnavailable
+	}
+	result, err := unmarshalResult(record.Result)
+	if err != nil {
+		return Result{}, ErrReplayUnavailable
+	}
+	if result.TransactionID != record.ID || result.State != wager.State(record.State) || result.Balance < 0 || result.Amount.Minor() != record.Amount || result.Amount.Currency() != record.Currency {
+		return Result{}, ErrReplayUnavailable
+	}
+	return result, nil
+}
+
 func persistPendingReference(ctx context.Context, tx *postgres.Repository, cmd Command, w postgres.WalletRecord, now time.Time, txDomain wager.Transaction, output *Result) error {
 	if err := txDomain.Transition(wager.PendingReference); err != nil {
 		return err
 	}
-	if err := insertTransaction(ctx, tx, cmd, wager.PendingReference, now); err != nil {
+	result := Result{TransactionID: cmd.ID, State: wager.PendingReference, Balance: w.Balance, Amount: cmd.Amount}
+	if err := insertTransaction(ctx, tx, cmd, result, now); err != nil {
 		return err
 	}
-	result := Result{TransactionID: cmd.ID, State: wager.PendingReference, Balance: w.Balance, Amount: cmd.Amount}
 	*output = result
 	return insertEvent(ctx, tx, "WagerTransactionPendingReference", cmd.Type, cmd.ID, cmd.WalletID, result, int64(w.Version), now, cmd.IdempotencyKey)
 }
@@ -240,20 +387,24 @@ func persistRejected(ctx context.Context, tx *postgres.Repository, cmd Command, 
 	if err := txDomain.Transition(wager.Rejected); err != nil {
 		return err
 	}
-	if err := insertTransaction(ctx, tx, cmd, wager.Rejected, now); err != nil {
+	result := Result{TransactionID: cmd.ID, State: wager.Rejected, Balance: w.Balance, Amount: cmd.Amount}
+	if err := insertTransaction(ctx, tx, cmd, result, now); err != nil {
 		return err
 	}
-	result := Result{TransactionID: cmd.ID, State: wager.Rejected, Balance: w.Balance, Amount: cmd.Amount}
 	*output = result
 	return insertEvent(ctx, tx, "WagerTransactionRejected", cmd.Type, cmd.ID, cmd.WalletID, result, int64(w.Version), now, cmd.IdempotencyKey)
 }
 
-func insertTransaction(ctx context.Context, tx *postgres.Repository, cmd Command, state wager.State, now time.Time) error {
+func insertTransaction(ctx context.Context, tx *postgres.Repository, cmd Command, result Result, now time.Time) error {
+	resultData, err := marshalResult(result)
+	if err != nil {
+		return err
+	}
 	return postgres.NewWagerTransactionRepository(tx).Insert(ctx, postgres.WagerTransactionRecord{
 		ID: cmd.ID, ExternalID: cmd.ExternalID, ProviderID: cmd.ProviderID, WalletID: cmd.WalletID,
 		PlayerID: cmd.PlayerID, GameID: cmd.GameID, RoundID: cmd.RoundID, Type: string(cmd.Type), Amount: cmd.Amount.Minor(),
-		Currency: cmd.Amount.Currency(), State: string(state), IdempotencyKey: cmd.IdempotencyKey,
-		PayloadHash: cmd.PayloadHash, ReferenceExternalID: cmd.ReferenceExternalID, CreatedAt: now, UpdatedAt: now,
+		Currency: cmd.Amount.Currency(), State: string(result.State), IdempotencyKey: cmd.IdempotencyKey,
+		PayloadHash: cmd.PayloadHash, Result: resultData, ReferenceExternalID: cmd.ReferenceExternalID, CreatedAt: now, UpdatedAt: now,
 	})
 }
 
@@ -276,7 +427,7 @@ func insertEvent(ctx context.Context, tx *postgres.Repository, eventType string,
 }
 
 func validReference(cmd Command, reference postgres.WagerTransactionRecord) bool {
-	if reference.State != string(wager.Processed) || reference.WalletID != cmd.WalletID || reference.PlayerID != cmd.PlayerID || reference.GameID != cmd.GameID || reference.RoundID != cmd.RoundID || reference.Currency != cmd.Amount.Currency() || reference.Amount != cmd.Amount.Minor() {
+	if reference.State != string(wager.Processed) || reference.PlayerID == legacyIdentity || reference.GameID == legacyIdentity || reference.RoundID == legacyIdentity || reference.WalletID != cmd.WalletID || reference.PlayerID != cmd.PlayerID || reference.GameID != cmd.GameID || reference.RoundID != cmd.RoundID || reference.Currency != cmd.Amount.Currency() || reference.Amount != cmd.Amount.Minor() {
 		return false
 	}
 	if cmd.Type == wager.Refund {

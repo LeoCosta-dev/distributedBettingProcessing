@@ -160,23 +160,27 @@ Guarantee persistent idempotency across instances and restarts.
 
 ### Tasks
 
-* [ ] Idempotency-Key
-* [ ] canonical payload
-* [ ] payload hashing
-* [ ] duplicate detection
-* [ ] same key + same payload
-* [ ] same key + different payload
-* [ ] same transaction + different key
-* [ ] persisted original result
-* [ ] replay behavior
+* [x] Idempotency-Key
+* [x] canonical payload
+* [x] payload hashing
+* [x] duplicate detection
+* [x] same key + same payload
+* [x] same key + different payload
+* [x] same transaction + different key
+* [x] persisted original result
+* [x] replay behavior
 
 ### Verification
 
-* [ ] 50 concurrent duplicate requests
-* [ ] restart application
-* [ ] replay after restart
-* [ ] cross-instance replay
-* [ ] conflict tests
+* [x] 50 concurrent duplicate requests
+* [x] restart application
+* [x] replay after restart
+* [x] cross-instance replay
+* [x] conflict tests
+
+> Registros anteriores ao Loop 4 que não possuem hash canônico compatível e
+> resultado persistido não são reprocessados; a tentativa é recusada com
+> `ErrReplayUnavailable` para preservar a segurança financeira.
 
 ---
 
@@ -438,7 +442,7 @@ Documentation
 # Current Loop
 
 ```text
-Loop 3 — Financial Processing
+Loop 4 — Idempotency
 ```
 
 # Current Status
