@@ -32,26 +32,26 @@ Establish the repository structure and local development environment.
 
 ### Tasks
 
-* [ ] Create project structure
-* [ ] Initialize Go module
-* [ ] Configure Go version
-* [ ] Create Docker Compose
-* [ ] Configure PostgreSQL
-* [ ] Configure LocalStack
-* [ ] Configure Keycloak
-* [ ] Create `.env.example`
-* [ ] Create Makefile
-* [ ] Create migration structure
-* [ ] Verify clean startup
+* [x] Create project structure
+* [x] Initialize Go module
+* [x] Configure Go version
+* [x] Create Docker Compose
+* [x] Configure PostgreSQL
+* [x] Configure LocalStack
+* [x] Configure Keycloak
+* [x] Create `.env.example`
+* [x] Create Makefile
+* [x] Create migration structure
+* [x] Verify clean startup
 
 ### Verification
 
-* [ ] `docker compose up --build`
-* [ ] PostgreSQL reachable
-* [ ] LocalStack reachable
-* [ ] Keycloak reachable
-* [ ] application starts
-* [ ] application shuts down cleanly
+* [x] `docker compose up --build`
+* [x] PostgreSQL reachable
+* [x] LocalStack reachable
+* [x] Keycloak reachable
+* [x] application starts
+* [x] application shuts down cleanly
 
 ---
 
@@ -440,7 +440,7 @@ Loop 0 — Project Foundation
 # Current Status
 
 ```text
-NOT STARTED
+LOOP 0 COMPLETE
 ```
 
 # Rules

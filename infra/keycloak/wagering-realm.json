@@ -1,0 +1,15 @@
+{
+  "realm": "wagering",
+  "enabled": true,
+  "clients": [
+    {
+      "clientId": "wagering-api",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "change-me",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false
+    }
+  ]
+}

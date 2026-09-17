@@ -1,34 +1,34 @@
 .PHONY: up down logs build run test test-race vet fmt migrate-up migrate-down
 
 up:
-docker compose up --build
+	docker compose up --build
 
 down:
-docker compose down
+	docker compose down
 
 logs:
-docker compose logs -f
+	docker compose logs -f
 
 build:
-go build ./...
+	go build ./...
 
 run:
-go run ./cmd/api
+	go run ./cmd/api
 
 test:
-go test ./...
+	go test ./...
 
 test-race:
-go test -race ./...
+	go test -race ./...
 
 vet:
-go vet ./...
+	go vet ./...
 
 fmt:
-gofmt -w .
+	gofmt -w $$(find . -name '*.go' -not -path './vendor/*')
 
 migrate-up:
-migrate -path migrations -database "$$DATABASE_URL" up
+	migrate -path migrations -database "$$DATABASE_URL" up
 
 migrate-down:
-migrate -path migrations -database "$$DATABASE_URL" down 1
+	migrate -path migrations -database "$$DATABASE_URL" down 1

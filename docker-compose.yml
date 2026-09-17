@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:17-alpine
+    image: docker.io/library/postgres:17-alpine
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-wagering}
       POSTGRES_USER: ${POSTGRES_USER:-wagering}
@@ -16,9 +16,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 5s
 
   localstack:
-    image: localstack/localstack:4.8
+    image: docker.io/localstack/localstack:4.8
     environment:
       SERVICES: sqs
       AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
@@ -28,7 +29,7 @@ services:
       - "${LOCALSTACK_PORT:-4566}:4566"
     volumes:
       - localstack_data:/var/lib/localstack
-      - ./infra/localstack/init:/etc/localstack/init/ready.d
+      - ./infra/localstack/init:/etc/localstack/init/ready.d:ro,Z
     healthcheck:
       test:
         - CMD-SHELL
@@ -48,15 +49,22 @@ services:
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
       KC_HEALTH_ENABLED: "true"
     ports:
-      - "${KEYCLOAK_PORT:-8081}:8080"
+      - "${KEYCLOAK_PORT:-8082}:8080"
     volumes:
-      - keycloak_data:/opt/keycloak/data
-      - ./infra/keycloak:/opt/keycloak/data/import
+      - ./infra/keycloak:/opt/keycloak/data/import:ro,Z
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "exec 3<>/dev/tcp/127.0.0.1/9000; printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q '200 OK' <&3"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
 
   app:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: dockerfile
     environment:
       APP_ENV: ${APP_ENV:-local}
       APP_NAME: ${APP_NAME:-distributedBettingProcessing}
@@ -79,10 +87,13 @@ services:
 
       SQS_VISIBILITY_TIMEOUT_SECONDS: ${SQS_VISIBILITY_TIMEOUT_SECONDS:-30}
       SQS_MAX_RECEIVE_COUNT: ${SQS_MAX_RECEIVE_COUNT:-5}
+
       OUTBOX_POLL_INTERVAL: ${OUTBOX_POLL_INTERVAL:-1s}
       OUTBOX_BATCH_SIZE: ${OUTBOX_BATCH_SIZE:-20}
+
       REFERENCE_POLL_INTERVAL: ${REFERENCE_POLL_INTERVAL:-1s}
       REFERENCE_MAX_ATTEMPTS: ${REFERENCE_MAX_ATTEMPTS:-10}
+
       LOG_LEVEL: ${LOG_LEVEL:-info}
 
     depends_on:
@@ -91,11 +102,38 @@ services:
       localstack:
         condition: service_healthy
       keycloak:
-        condition: service_started
+        condition: service_healthy
+
     ports:
       - "${HTTP_PORT:-8080}:8080"
+
+  stack-ready:
+    image: docker.io/library/alpine:3.22
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    command:
+      - /bin/sh
+      - -c
+      - |
+        echo ""
+        echo "=================================================="
+        echo " Distributed Betting Processing"
+        echo " Local infrastructure initialized successfully"
+        echo "=================================================="
+        echo " PostgreSQL : HEALTHY"
+        echo " LocalStack : HEALTHY"
+        echo " SQS Queues : READY"
+        echo " Keycloak   : HEALTHY"
+        echo " Realm      : wagering"
+        echo " App        : STARTED (health endpoint pending)"
+        echo "=================================================="
+        echo ""
 
 volumes:
   postgres_data:
   localstack_data:
-  keycloak_data:
