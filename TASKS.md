@@ -192,20 +192,24 @@ Prove correctness across independent application processes.
 
 ### Tasks
 
-* [ ] wallet row locking
-* [ ] transaction boundaries
-* [ ] concurrent debit protection
-* [ ] lost-update prevention
-* [ ] independent wallet parallelism
+* [x] wallet row locking
+* [x] transaction boundaries
+* [x] concurrent debit protection
+* [x] lost-update prevention
+* [x] independent wallet parallelism
 
 ### Verification
 
-* [ ] two 80 BRL BETs against 100 BRL
-* [ ] exactly one successful debit
-* [ ] final balance 20 BRL
-* [ ] three independent instances
-* [ ] different wallets execute concurrently
-* [ ] `go test -race`
+* [x] two 80 BRL BETs against 100 BRL
+* [x] exactly one successful debit
+* [x] final balance 20 BRL
+* [x] three independent instances
+* [x] different wallets execute concurrently
+* [x] `go test -race`
+
+> A integração do Loop 5 inicia três executáveis independentes do binário de
+> testes, cada um com memória e pool PostgreSQL próprios, e coordena somente
+> uma barreira externa de início.
 
 ---
 
@@ -442,7 +446,7 @@ Documentation
 # Current Loop
 
 ```text
-Loop 4 — Idempotency
+Loop 5 — Concurrency
 ```
 
 # Current Status
