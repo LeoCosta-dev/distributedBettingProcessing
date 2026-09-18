@@ -21,6 +21,7 @@ func TestModuleStartsAndStopsWithPostgreSQL(t *testing.T) {
 	t.Setenv("OAUTH_AUDIENCE", "wagering-api")
 	t.Setenv("HTTP_SHUTDOWN_TIMEOUT", "2s")
 	t.Setenv("LOG_LEVEL", "error")
+	t.Setenv("OUTBOX_ENABLED", "false")
 
 	app := fx.New(Module(), fx.NopLogger)
 	startContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)

@@ -21,6 +21,7 @@ const (
 	defaultAWSRegion        = "us-east-1"
 	defaultSQSWagerQueue    = "wager-transactions.fifo"
 	defaultSQSWagerDLQ      = "wager-transactions-dlq.fifo"
+	defaultSQSEventQueue    = "wager-events.fifo"
 	defaultSQSVisibility    = 30 * time.Second
 	defaultSQSWaitTime      = 10 * time.Second
 	defaultSQSMaxMessages   = 1
@@ -28,6 +29,11 @@ const (
 	defaultReferencePoll    = time.Second
 	defaultReferenceMax     = 10
 	defaultReferenceBackoff = time.Second
+	defaultOutboxPoll       = time.Second
+	defaultOutboxBatch      = 20
+	defaultOutboxMax        = 10
+	defaultOutboxBackoff    = time.Second
+	defaultOutboxLease      = 30 * time.Second
 )
 
 // Config holds the transport and dependency configuration of the process.
@@ -48,6 +54,7 @@ type Config struct {
 	AWSSecretAccessKey        string
 	SQSWagerQueue             string
 	SQSWagerDLQ               string
+	SQSEventQueue             string
 	SQSVisibilityTimeout      time.Duration
 	SQSWaitTime               time.Duration
 	SQSMaxMessages            int32
@@ -55,6 +62,12 @@ type Config struct {
 	ReferencePollInterval     time.Duration
 	ReferenceMaxAttempts      int
 	ReferenceBackoff          time.Duration
+	OutboxPollInterval        time.Duration
+	OutboxBatchSize           int
+	OutboxMaxAttempts         int
+	OutboxBackoff             time.Duration
+	OutboxClaimLease          time.Duration
+	OutboxEnabled             bool
 }
 
 // Load reads and validates the process configuration from the environment.
@@ -78,6 +91,7 @@ func Load() (Config, error) {
 		AWSSecretAccessKey:        valueOr(os.Getenv("AWS_SECRET_ACCESS_KEY"), "test"),
 		SQSWagerQueue:             valueOr(os.Getenv("SQS_WAGER_QUEUE"), defaultSQSWagerQueue),
 		SQSWagerDLQ:               valueOr(os.Getenv("SQS_WAGER_DLQ"), defaultSQSWagerDLQ),
+		SQSEventQueue:             valueOr(os.Getenv("SQS_EVENT_QUEUE"), defaultSQSEventQueue),
 		SQSVisibilityTimeout:      defaultSQSVisibility,
 		SQSWaitTime:               defaultSQSWaitTime,
 		SQSMaxMessages:            defaultSQSMaxMessages,
@@ -85,6 +99,12 @@ func Load() (Config, error) {
 		ReferencePollInterval:     defaultReferencePoll,
 		ReferenceMaxAttempts:      defaultReferenceMax,
 		ReferenceBackoff:          defaultReferenceBackoff,
+		OutboxPollInterval:        defaultOutboxPoll,
+		OutboxBatchSize:           defaultOutboxBatch,
+		OutboxMaxAttempts:         defaultOutboxMax,
+		OutboxBackoff:             defaultOutboxBackoff,
+		OutboxClaimLease:          defaultOutboxLease,
+		OutboxEnabled:             true,
 	}
 	if raw := strings.TrimSpace(os.Getenv("HTTP_SHUTDOWN_TIMEOUT")); raw != "" {
 		parsed, err := time.ParseDuration(raw)
@@ -142,6 +162,48 @@ func Load() (Config, error) {
 		}
 		cfg.ReferenceBackoff = parsed
 	}
+	if raw := strings.TrimSpace(os.Getenv("OUTBOX_POLL_INTERVAL")); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed <= 0 {
+			return Config{}, fmt.Errorf("%w: OUTBOX_POLL_INTERVAL=%q", ErrInvalidConfiguration, raw)
+		}
+		cfg.OutboxPollInterval = parsed
+	}
+	if raw := strings.TrimSpace(os.Getenv("OUTBOX_BATCH_SIZE")); raw != "" {
+		batch, err := strconv.Atoi(raw)
+		if err != nil || batch < 1 || batch > 100 {
+			return Config{}, fmt.Errorf("%w: OUTBOX_BATCH_SIZE=%q", ErrInvalidConfiguration, raw)
+		}
+		cfg.OutboxBatchSize = batch
+	}
+	if raw := strings.TrimSpace(os.Getenv("OUTBOX_MAX_ATTEMPTS")); raw != "" {
+		attempts, err := strconv.Atoi(raw)
+		if err != nil || attempts < 1 {
+			return Config{}, fmt.Errorf("%w: OUTBOX_MAX_ATTEMPTS=%q", ErrInvalidConfiguration, raw)
+		}
+		cfg.OutboxMaxAttempts = attempts
+	}
+	if raw := strings.TrimSpace(os.Getenv("OUTBOX_BACKOFF")); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed < 0 {
+			return Config{}, fmt.Errorf("%w: OUTBOX_BACKOFF=%q", ErrInvalidConfiguration, raw)
+		}
+		cfg.OutboxBackoff = parsed
+	}
+	if raw := strings.TrimSpace(os.Getenv("OUTBOX_CLAIM_LEASE")); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed <= 0 {
+			return Config{}, fmt.Errorf("%w: OUTBOX_CLAIM_LEASE=%q", ErrInvalidConfiguration, raw)
+		}
+		cfg.OutboxClaimLease = parsed
+	}
+	if raw := strings.TrimSpace(os.Getenv("OUTBOX_ENABLED")); raw != "" {
+		enabled, err := strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("%w: OUTBOX_ENABLED=%q", ErrInvalidConfiguration, raw)
+		}
+		cfg.OutboxEnabled = enabled
+	}
 	for _, required := range []struct {
 		name  string
 		value string
@@ -158,7 +220,7 @@ func Load() (Config, error) {
 	if err := validateOIDCRealmConsistency(cfg.OIDCIssuer, cfg.OIDCJWKSURL, cfg.KeycloakRealm); err != nil {
 		return Config{}, err
 	}
-	if strings.TrimSpace(cfg.AWSRegion) == "" || strings.TrimSpace(cfg.SQSWagerQueue) == "" || strings.TrimSpace(cfg.SQSWagerDLQ) == "" {
+	if strings.TrimSpace(cfg.AWSRegion) == "" || strings.TrimSpace(cfg.SQSWagerQueue) == "" || strings.TrimSpace(cfg.SQSWagerDLQ) == "" || strings.TrimSpace(cfg.SQSEventQueue) == "" {
 		return Config{}, fmt.Errorf("%w: AWS_REGION and SQS queue names are required", ErrInvalidConfiguration)
 	}
 	switch cfg.LogLevel {

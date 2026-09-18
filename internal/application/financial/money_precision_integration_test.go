@@ -80,6 +80,14 @@ func TestMoneyPrecisionFinancialRegression(t *testing.T) {
 
 func assertPersistedMoneyMovement(t *testing.T, ctx context.Context, queryPool *pgxpool.Pool, command Command, direction string, value, before, after int64) {
 	t.Helper()
+	beforeMoney, err := moneyFromMinor(before, "BRL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterMoney, err := moneyFromMinor(after, "BRL")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var transactionAmount int64
 	var transactionState string
@@ -117,12 +125,27 @@ func assertPersistedMoneyMovement(t *testing.T, ctx context.Context, queryPool *
 				Amount   string `json:"amount"`
 				Currency string `json:"currency"`
 			} `json:"amount"`
+			Money struct {
+				Amount   string `json:"amount"`
+				Currency string `json:"currency"`
+			} `json:"money"`
+			Direction     string `json:"direction"`
+			BalanceBefore struct {
+				Amount string `json:"amount"`
+			} `json:"balanceBefore"`
+			BalanceAfter struct {
+				Amount string `json:"amount"`
+			} `json:"balanceAfter"`
+			WalletVersion int64 `json:"walletVersion"`
 		}
 		if err := json.Unmarshal(data, &event); err != nil {
 			t.Fatalf("%s event data: %v", eventType, err)
 		}
-		if event.Amount.Amount != command.Amount.Amount() || event.Amount.Currency != "BRL" {
+		if eventType == "WagerTransactionProcessed" && (event.Amount.Amount != command.Amount.Amount() || event.Amount.Currency != "BRL") {
 			t.Fatalf("%s money = %+v, want %s BRL", eventType, event.Amount, command.Amount.Amount())
+		}
+		if eventType == "WalletBalanceChanged" && (event.Money.Amount != command.Amount.Amount() || event.Money.Currency != "BRL" || event.Direction != direction || event.BalanceBefore.Amount != beforeMoney.Amount() || event.BalanceAfter.Amount != afterMoney.Amount() || event.WalletVersion < 1) {
+			t.Fatalf("wallet event snapshot = %+v, want direction=%s before=%d after=%d", event, direction, before, after)
 		}
 	}
 }

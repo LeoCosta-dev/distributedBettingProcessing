@@ -9,6 +9,7 @@ import (
 )
 
 var ErrLedgerInconsistent = errors.New("ledger is inconsistent")
+var ErrOutboxClaimLost = errors.New("outbox claim is no longer owned")
 
 type WalletRecord struct {
 	ID                   uuid.UUID
@@ -252,6 +253,25 @@ func (r *InboxRepository) MarkCompleted(ctx context.Context, consumerName, messa
 
 type OutboxRepository struct{ db *Repository }
 
+type OutboxRecord struct {
+	EventID       uuid.UUID
+	OrderingID    int64
+	EventType     string
+	AggregateID   uuid.UUID
+	CorrelationID string
+	CausationID   string
+	OccurredAt    time.Time
+	Version       int64
+	Data          []byte
+	Status        string
+	Attempts      int
+	NextAttemptAt time.Time
+	ClaimedAt     *time.Time
+	ClaimToken    uuid.UUID
+	PublishedAt   *time.Time
+	LastError     string
+}
+
 func NewOutboxRepository(db *Repository) *OutboxRepository { return &OutboxRepository{db: db} }
 func (r *OutboxRepository) Insert(ctx context.Context, eventID uuid.UUID, eventType string, aggregateID uuid.UUID, occurredAt time.Time, data []byte, nextAttemptAt time.Time) error {
 	return r.InsertWithMetadata(ctx, eventID, eventType, aggregateID, "", "", 1, occurredAt, data, nextAttemptAt)
@@ -270,6 +290,50 @@ func (r *OutboxRepository) CountByTypeAndCausation(ctx context.Context, eventTyp
 	err := r.db.exec.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE event_type=$1 AND causation_id=$2`, eventType, causationID).Scan(&count)
 	return count, err
 }
+
+func (r *OutboxRepository) FindFirstByTypeAndAggregate(ctx context.Context, eventType string, aggregateID uuid.UUID) (OutboxRecord, error) {
+	var record OutboxRecord
+	var correlationID, causationID, lastError *string
+	var claimedAt, publishedAt *time.Time
+	err := r.db.exec.QueryRow(ctx, `SELECT event_id,ordering_id,event_type,aggregate_id,correlation_id,causation_id,occurred_at,version,data,status,attempts,next_attempt_at,claimed_at,claim_token,published_at,last_error FROM outbox WHERE event_type=$1 AND aggregate_id=$2 ORDER BY ordering_id LIMIT 1`, eventType, aggregateID).Scan(
+		&record.EventID, &record.OrderingID, &record.EventType, &record.AggregateID, &correlationID, &causationID, &record.OccurredAt,
+		&record.Version, &record.Data, &record.Status, &record.Attempts, &record.NextAttemptAt, &claimedAt, &record.ClaimToken, &publishedAt, &lastError,
+	)
+	if correlationID != nil {
+		record.CorrelationID = *correlationID
+	}
+	if causationID != nil {
+		record.CausationID = *causationID
+	}
+	if lastError != nil {
+		record.LastError = *lastError
+	}
+	record.ClaimedAt = claimedAt
+	record.PublishedAt = publishedAt
+	return record, err
+}
+
+func (r *OutboxRepository) FindByID(ctx context.Context, eventID uuid.UUID) (OutboxRecord, error) {
+	var record OutboxRecord
+	var correlationID, causationID, lastError *string
+	var claimedAt, publishedAt *time.Time
+	err := r.db.exec.QueryRow(ctx, `SELECT event_id,ordering_id,event_type,aggregate_id,correlation_id,causation_id,occurred_at,version,data,status,attempts,next_attempt_at,claimed_at,claim_token,published_at,last_error FROM outbox WHERE event_id=$1`, eventID).Scan(
+		&record.EventID, &record.OrderingID, &record.EventType, &record.AggregateID, &correlationID, &causationID, &record.OccurredAt,
+		&record.Version, &record.Data, &record.Status, &record.Attempts, &record.NextAttemptAt, &claimedAt, &record.ClaimToken, &publishedAt, &lastError,
+	)
+	if correlationID != nil {
+		record.CorrelationID = *correlationID
+	}
+	if causationID != nil {
+		record.CausationID = *causationID
+	}
+	if lastError != nil {
+		record.LastError = *lastError
+	}
+	record.ClaimedAt = claimedAt
+	record.PublishedAt = publishedAt
+	return record, err
+}
 func nullableString(value string) any {
 	if value == "" {
 		return nil
@@ -277,7 +341,102 @@ func nullableString(value string) any {
 	return value
 }
 func (r *OutboxRepository) ClaimOne(ctx context.Context, now time.Time) (uuid.UUID, error) {
-	var id uuid.UUID
-	err := r.db.exec.QueryRow(ctx, `UPDATE outbox SET status='CLAIMED', claimed_at=$1, attempts=attempts+1 WHERE event_id=(SELECT event_id FROM outbox WHERE status='PENDING' AND next_attempt_at <= $1 ORDER BY next_attempt_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING event_id`, now).Scan(&id)
-	return id, err
+	record, err := r.ClaimOneRecord(ctx, now, 30*time.Second)
+	return record.EventID, err
+}
+
+func (r *OutboxRepository) ClaimOneRecord(ctx context.Context, now time.Time, lease time.Duration) (OutboxRecord, error) {
+	var record OutboxRecord
+	var correlationID, causationID, lastError *string
+	var claimedAt, publishedAt *time.Time
+	claimToken := uuid.New()
+	err := r.db.exec.QueryRow(ctx, `
+		UPDATE outbox
+		SET status='CLAIMED', claimed_at=$1, claim_token=$3, attempts=attempts+1
+		WHERE event_id=(
+			SELECT event_id FROM outbox
+			WHERE ((status='PENDING' AND next_attempt_at <= $1)
+			   OR (status='CLAIMED' AND claimed_at <= $2))
+			  AND NOT EXISTS (
+				SELECT 1 FROM outbox predecessor
+				WHERE predecessor.aggregate_id = outbox.aggregate_id
+				  AND predecessor.ordering_id < outbox.ordering_id
+				  AND predecessor.status <> 'PUBLISHED'
+			  )
+			ORDER BY next_attempt_at, event_id
+			FOR UPDATE SKIP LOCKED LIMIT 1
+		)
+		RETURNING event_id,ordering_id,event_type,aggregate_id,correlation_id,causation_id,occurred_at,version,data,status,attempts,next_attempt_at,claimed_at,claim_token,published_at,last_error`, now, now.Add(-lease), claimToken).Scan(
+		&record.EventID, &record.OrderingID, &record.EventType, &record.AggregateID, &correlationID, &causationID, &record.OccurredAt,
+		&record.Version, &record.Data, &record.Status, &record.Attempts, &record.NextAttemptAt, &claimedAt, &record.ClaimToken, &publishedAt, &lastError,
+	)
+	if correlationID != nil {
+		record.CorrelationID = *correlationID
+	}
+	if causationID != nil {
+		record.CausationID = *causationID
+	}
+	if lastError != nil {
+		record.LastError = *lastError
+	}
+	record.ClaimedAt = claimedAt
+	record.PublishedAt = publishedAt
+	return record, err
+}
+
+// ClaimRecordByID is used by deterministic integration tests to coordinate a
+// specific claim without weakening the production claim protocol.
+func (r *OutboxRepository) ClaimRecordByID(ctx context.Context, eventID uuid.UUID, now time.Time, lease time.Duration) (OutboxRecord, error) {
+	var record OutboxRecord
+	var correlationID, causationID, lastError *string
+	var claimedAt, publishedAt *time.Time
+	claimToken := uuid.New()
+	err := r.db.exec.QueryRow(ctx, `
+		UPDATE outbox
+		SET status='CLAIMED', claimed_at=$2, claim_token=$3, attempts=attempts+1
+		WHERE event_id=$1
+		  AND ((status='PENDING' AND next_attempt_at <= $2)
+		       OR (status='CLAIMED' AND claimed_at <= $4))
+		  AND NOT EXISTS (
+			SELECT 1 FROM outbox predecessor
+			WHERE predecessor.aggregate_id = outbox.aggregate_id
+			  AND predecessor.ordering_id < outbox.ordering_id
+			  AND predecessor.status <> 'PUBLISHED'
+		  )
+		RETURNING event_id,ordering_id,event_type,aggregate_id,correlation_id,causation_id,occurred_at,version,data,status,attempts,next_attempt_at,claimed_at,claim_token,published_at,last_error`, eventID, now, claimToken, now.Add(-lease)).Scan(
+		&record.EventID, &record.OrderingID, &record.EventType, &record.AggregateID, &correlationID, &causationID, &record.OccurredAt,
+		&record.Version, &record.Data, &record.Status, &record.Attempts, &record.NextAttemptAt, &claimedAt, &record.ClaimToken, &publishedAt, &lastError,
+	)
+	if correlationID != nil {
+		record.CorrelationID = *correlationID
+	}
+	if causationID != nil {
+		record.CausationID = *causationID
+	}
+	if lastError != nil {
+		record.LastError = *lastError
+	}
+	record.ClaimedAt = claimedAt
+	record.PublishedAt = publishedAt
+	return record, err
+}
+
+func (r *OutboxRepository) MarkPublished(ctx context.Context, eventID, claimToken uuid.UUID, publishedAt time.Time) error {
+	tag, err := r.db.exec.Exec(ctx, `UPDATE outbox SET status='PUBLISHED', published_at=$3, claimed_at=NULL, claim_token=NULL, last_error=NULL WHERE event_id=$1 AND claim_token=$2 AND status='CLAIMED'`, eventID, claimToken, publishedAt)
+	if err == nil && tag.RowsAffected() != 1 {
+		return ErrOutboxClaimLost
+	}
+	return err
+}
+
+func (r *OutboxRepository) MarkRetry(ctx context.Context, eventID, claimToken uuid.UUID, attempts int, nextAttemptAt time.Time, lastError string, maxAttempts int, now time.Time) error {
+	status := "PENDING"
+	if attempts >= maxAttempts {
+		status = "FAILED"
+	}
+	tag, err := r.db.exec.Exec(ctx, `UPDATE outbox SET status=$2, next_attempt_at=$3, claimed_at=NULL, claim_token=NULL, last_error=$4 WHERE event_id=$1 AND claim_token=$5 AND status='CLAIMED'`, eventID, status, nextAttemptAt, nullableString(lastError), claimToken)
+	if err == nil && tag.RowsAffected() != 1 {
+		return ErrOutboxClaimLost
+	}
+	return err
 }

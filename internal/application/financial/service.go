@@ -69,6 +69,25 @@ type eventPayload struct {
 	FailureCode   string      `json:"failureCode,omitempty"`
 }
 
+type walletBalanceChangedPayload struct {
+	TransactionID uuid.UUID   `json:"transactionId"`
+	WalletID      uuid.UUID   `json:"walletId"`
+	Direction     string      `json:"direction"`
+	Money         money.Money `json:"money"`
+	BalanceBefore money.Money `json:"balanceBefore"`
+	BalanceAfter  money.Money `json:"balanceAfter"`
+	WalletVersion int64       `json:"walletVersion"`
+	Type          wager.Type  `json:"type"`
+	State         wager.State `json:"state"`
+}
+
+type balanceChange struct {
+	Direction     ledger.Direction
+	BalanceBefore money.Money
+	BalanceAfter  money.Money
+	WalletVersion int64
+}
+
 type Service struct{ db *postgres.Repository }
 
 func NewService(db *postgres.Repository) *Service { return &Service{db: db} }
@@ -114,7 +133,7 @@ func (s *Service) OpenWallet(ctx context.Context, id uuid.UUID, playerID string,
 		if err := postgres.NewLedgerRepository(tx).Insert(ctx, ledgerRecord(entry)); err != nil {
 			return err
 		}
-		return insertFinancialEvents(ctx, tx, wager.Opening, id, openingResult, 1, now, externalID, true)
+		return insertFinancialEvents(ctx, tx, wager.Opening, id, openingResult, 1, now, externalID, true, balanceChange{Direction: ledger.Credit, BalanceBefore: before, BalanceAfter: opening, WalletVersion: 1})
 	})
 }
 
@@ -363,7 +382,15 @@ func (s *Service) applyOperationInTx(ctx context.Context, tx *postgres.Repositor
 		version++
 	}
 	if state == wager.Processed {
-		return result, insertFinancialEvents(ctx, tx, cmd.Type, cmd.WalletID, result, version, now, cmd.IdempotencyKey, movement > 0)
+		beforeMoney, err := moneyFromMinor(before, cmd.Amount.Currency())
+		if err != nil {
+			return result, err
+		}
+		afterMoney, err := moneyFromMinor(after, cmd.Amount.Currency())
+		if err != nil {
+			return result, err
+		}
+		return result, insertFinancialEvents(ctx, tx, cmd.Type, cmd.WalletID, result, version, now, cmd.IdempotencyKey, movement > 0, balanceChange{Direction: direction, BalanceBefore: beforeMoney, BalanceAfter: afterMoney, WalletVersion: version})
 	}
 	return result, insertEvent(ctx, tx, "WagerTransactionRejected", cmd.Type, cmd.ID, cmd.WalletID, result, version, now, cmd.IdempotencyKey)
 }
@@ -681,18 +708,37 @@ func pendingReferenceNextAttempt(state wager.State, now time.Time) *time.Time {
 	return &now
 }
 
-func insertFinancialEvents(ctx context.Context, tx *postgres.Repository, typ wager.Type, walletID uuid.UUID, result Result, version int64, now time.Time, correlation string, balanceChanged bool) error {
+func insertFinancialEvents(ctx context.Context, tx *postgres.Repository, typ wager.Type, walletID uuid.UUID, result Result, version int64, now time.Time, correlation string, balanceChanged bool, change balanceChange) error {
 	if err := insertEvent(ctx, tx, "WagerTransactionProcessed", typ, result.TransactionID, walletID, result, version, now, correlation); err != nil {
 		return err
 	}
 	if !balanceChanged {
 		return nil
 	}
-	return insertEvent(ctx, tx, "WalletBalanceChanged", typ, walletID, walletID, result, version, now, correlation)
+	return insertEvent(ctx, tx, "WalletBalanceChanged", typ, walletID, walletID, result, version, now, correlation, change)
 }
 
-func insertEvent(ctx context.Context, tx *postgres.Repository, eventType string, typ wager.Type, aggregateID, walletID uuid.UUID, result Result, version int64, now time.Time, correlation string) error {
-	data, err := json.Marshal(eventPayload{TransactionID: result.TransactionID, WalletID: walletID, Type: typ, State: result.State, Amount: result.Amount, Balance: result.Balance, FailureCode: result.FailureCode})
+func insertEvent(ctx context.Context, tx *postgres.Repository, eventType string, typ wager.Type, aggregateID, walletID uuid.UUID, result Result, version int64, now time.Time, correlation string, changes ...balanceChange) error {
+	if len(changes) > 0 {
+		change := changes[0]
+		data, err := json.Marshal(walletBalanceChangedPayload{
+			TransactionID: result.TransactionID,
+			WalletID:      walletID,
+			Direction:     string(change.Direction),
+			Money:         result.Amount,
+			BalanceBefore: change.BalanceBefore,
+			BalanceAfter:  change.BalanceAfter,
+			WalletVersion: change.WalletVersion,
+			Type:          typ,
+			State:         result.State,
+		})
+		if err != nil {
+			return err
+		}
+		return postgres.NewOutboxRepository(tx).InsertWithMetadata(ctx, uuid.New(), eventType, aggregateID, correlation, result.TransactionID.String(), version, now, data, now)
+	}
+	payload := eventPayload{TransactionID: result.TransactionID, WalletID: walletID, Type: typ, State: result.State, Amount: result.Amount, Balance: result.Balance, FailureCode: result.FailureCode}
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}

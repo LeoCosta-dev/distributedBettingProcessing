@@ -15,6 +15,7 @@ import (
 	"go.uber.org/fx"
 
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/application/financial"
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/application/outbox"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/application/query"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/config"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/keycloak"
@@ -58,6 +59,7 @@ func Module() fx.Option {
 			),
 			newSQSConsumer,
 			newReferenceWorker,
+			newOutboxWorker,
 			transporthttp.NewRouter,
 			newHTTPServer,
 		),
@@ -116,6 +118,20 @@ func newReferenceWorker(db *postgres.Repository, cfg config.Config, logger *slog
 	})
 }
 
+func newOutboxWorker(db *postgres.Repository, client *sqsinfrastructure.Client, cfg config.Config, logger *slog.Logger) *outbox.Worker {
+	if !cfg.OutboxEnabled {
+		return nil
+	}
+	return outbox.NewWorker(db, client, outbox.Config{
+		PollInterval: cfg.OutboxPollInterval,
+		BatchSize:    cfg.OutboxBatchSize,
+		MaxAttempts:  cfg.OutboxMaxAttempts,
+		Backoff:      cfg.OutboxBackoff,
+		ClaimLease:   cfg.OutboxClaimLease,
+		Logger:       logger,
+	})
+}
+
 func newHTTPServer(cfg config.Config, router *transporthttp.Router, logger *slog.Logger) *transporthttp.Server {
 	return transporthttp.NewServer(cfg.HTTPAddr, router.Handler(), logger)
 }
@@ -132,8 +148,12 @@ func newHTTPServer(cfg config.Config, router *transporthttp.Router, logger *slog
 //  4. if the budget expires, cancel the remaining work through its context and
 //     close the connections;
 //  5. close the database pool.
-func registerLifecycle(lifecycle fx.Lifecycle, db *postgres.Repository, server *transporthttp.Server, consumer *messaging.Consumer, referenceWorker *financial.ReferenceWorker, cfg config.Config, logger *slog.Logger) {
-	appendLifecycleHooks(lifecycle, db, server, cfg, logger, consumer, referenceWorker)
+func registerLifecycle(lifecycle fx.Lifecycle, db *postgres.Repository, server *transporthttp.Server, consumer *messaging.Consumer, referenceWorker *financial.ReferenceWorker, outboxWorker *outbox.Worker, cfg config.Config, logger *slog.Logger) {
+	consumers := []lifecycleConsumer{consumer, referenceWorker}
+	if outboxWorker != nil {
+		consumers = append(consumers, outboxWorker)
+	}
+	appendLifecycleHooks(lifecycle, db, server, cfg, logger, consumers...)
 }
 
 type lifecycleDatabase interface {

@@ -19,8 +19,8 @@ See:
 
 Loop 7 includes the durable SQS inbox consumer and PostgreSQL/SQS readiness.
 Loop 8 adds durable pending-reference resolution with restartable retries.
-Transactional outbox publication, observability and failure engineering remain
-pending. Its SQS integration tests are conditional for the
+Loop 9 adds transactional outbox publication with recoverable claims and stable
+event IDs. Observability and failure engineering remain pending. Its SQS integration tests are conditional for the
 default local gate, but a skipped test is not evidence; use an available
 compatible runtime to execute PostgreSQL and LocalStack when the integration
 gate applies.

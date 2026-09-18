@@ -372,30 +372,37 @@ Guarantee durable event publication after financial commit.
 
 ### Tasks
 
-* [ ] outbox model
-* [ ] event constructors
-* [ ] immutable event payload
-* [ ] event IDs
-* [ ] outbox worker
-* [ ] record claiming
-* [ ] multiple publishers
-* [ ] retries
-* [ ] backoff
-* [ ] abandoned work recovery
-* [ ] event destination
-* [ ] atomic event creation with financial state
-* [ ] required event triggers and immutable snapshots
-* [ ] stable event IDs across republication
-* [ ] publication/confirmation failure windows
+* [x] outbox model
+* [x] event constructors
+* [x] immutable event payload
+* [x] event IDs
+* [x] outbox worker
+* [x] record claiming
+* [x] multiple publishers
+* [x] retries
+* [x] backoff
+* [x] abandoned work recovery
+* [x] event destination
+* [x] atomic event creation with financial state
+* [x] required event triggers and immutable snapshots
+* [x] stable event IDs across republication
+* [x] publication/confirmation failure windows
+* [x] durable per-aggregate publication ordering
 
 ### Verification
 
-* [ ] commit then process crash
-* [ ] outbox recovery
-* [ ] two publishers compete
-* [ ] publication retry
-* [ ] duplicate publication keeps event ID
-* [ ] all required events verified
+* [x] outbox recovery
+* [x] two publishers compete
+* [x] publication retry
+* [x] duplicate publication keeps event ID
+* [x] all required events verified
+* [x] same-aggregate ordering and independent-aggregate parallelism
+
+> Loop 9 publishes versioned immutable event envelopes to the FIFO
+> `wager-events.fifo` destination. PostgreSQL claims use a transaction-scoped
+> lease and claim token; abandoned claims are recoverable by another worker.
+> Publication ambiguity can result in repeated delivery with the same eventId.
+> Process-crash injection remains Loop 11 scope.
 
 ---
 
@@ -524,7 +531,7 @@ Documentation
 # Current Loop
 
 ```text
-Loop 8 — Pending References
+Loop 9 — Transactional Outbox
 ```
 
 # Current Status

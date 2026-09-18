@@ -22,11 +22,13 @@ import (
 // because it is stable for a queue, while every message operation still goes
 // through the AWS client and therefore receives its caller context.
 type Client struct {
-	api       *awssqs.Client
-	queueName string
+	api            *awssqs.Client
+	queueName      string
+	eventQueueName string
 
-	mu       sync.RWMutex
-	queueURL string
+	mu            sync.RWMutex
+	queueURL      string
+	eventQueueURL string
 }
 
 func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
@@ -41,7 +43,7 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 	if cfg.AWSEndpointURL != "" {
 		awsCfg.BaseEndpoint = aws.String(cfg.AWSEndpointURL)
 	}
-	return &Client{api: awssqs.NewFromConfig(awsCfg), queueName: cfg.SQSWagerQueue}, nil
+	return &Client{api: awssqs.NewFromConfig(awsCfg), queueName: cfg.SQSWagerQueue, eventQueueName: cfg.SQSEventQueue}, nil
 }
 
 func (c *Client) QueueURL(ctx context.Context) (string, error) {
@@ -93,6 +95,41 @@ func (c *Client) Check(ctx context.Context) error {
 	_, err = c.api.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
 		QueueUrl:       aws.String(queueURL),
 		AttributeNames: []types.QueueAttributeName{types.QueueAttributeNameQueueArn},
+	})
+	return err
+}
+
+func (c *Client) EventQueueURL(ctx context.Context) (string, error) {
+	c.mu.RLock()
+	queueURL := c.eventQueueURL
+	c.mu.RUnlock()
+	if queueURL != "" {
+		return queueURL, nil
+	}
+	response, err := c.api.GetQueueUrl(ctx, &awssqs.GetQueueUrlInput{QueueName: aws.String(c.eventQueueName)})
+	if err != nil {
+		return "", err
+	}
+	if response.QueueUrl == nil || *response.QueueUrl == "" {
+		return "", fmt.Errorf("SQS returned an empty URL for queue %q", c.eventQueueName)
+	}
+	c.mu.Lock()
+	if c.eventQueueURL == "" {
+		c.eventQueueURL = *response.QueueUrl
+	}
+	queueURL = c.eventQueueURL
+	c.mu.Unlock()
+	return queueURL, nil
+}
+
+func (c *Client) SendEvent(ctx context.Context, body, groupID, deduplicationID string) error {
+	queueURL, err := c.EventQueueURL(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = c.api.SendMessage(ctx, &awssqs.SendMessageInput{
+		QueueUrl: aws.String(queueURL), MessageBody: aws.String(body),
+		MessageGroupId: aws.String(groupID), MessageDeduplicationId: aws.String(deduplicationID),
 	})
 	return err
 }

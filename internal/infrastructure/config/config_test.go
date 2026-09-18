@@ -53,6 +53,9 @@ func TestLoadReadsOIDCAndShutdownConfiguration(t *testing.T) {
 	if cfg.ReferencePollInterval != time.Second || cfg.ReferenceMaxAttempts != 10 || cfg.ReferenceBackoff != time.Second {
 		t.Fatalf("reference worker defaults = %+v", cfg)
 	}
+	if cfg.SQSEventQueue != "wager-events.fifo" || !cfg.OutboxEnabled || cfg.OutboxPollInterval != time.Second || cfg.OutboxBatchSize != 20 || cfg.OutboxMaxAttempts != 10 || cfg.OutboxBackoff != time.Second || cfg.OutboxClaimLease != 30*time.Second {
+		t.Fatalf("outbox defaults = %+v", cfg)
+	}
 }
 
 func TestLoadRejectsInvalidConfiguration(t *testing.T) {
@@ -83,6 +86,10 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		{name: "invalid reference attempts", setup: func(t *testing.T) {
 			setRequiredEnvironment(t)
 			t.Setenv("REFERENCE_MAX_ATTEMPTS", "0")
+		}},
+		{name: "invalid outbox batch", setup: func(t *testing.T) {
+			setRequiredEnvironment(t)
+			t.Setenv("OUTBOX_BATCH_SIZE", "0")
 		}},
 	}
 	for _, test := range tests {

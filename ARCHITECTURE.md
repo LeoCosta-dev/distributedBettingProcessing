@@ -1130,6 +1130,41 @@ Decision:
   the reference lock; the reference-creation path does not claim pending rows,
   so the lock order has no cycle.
 
+## ADR-009 — Transactional outbox publisher
+
+Status: IMPLEMENTED — PENDING HUMAN REVIEW
+Date: 2026-09-18
+
+Decision:
+
+* Outbox rows are published asynchronously to the FIFO SQS queue configured by
+  `SQS_EVENT_QUEUE`, defaulting to `wager-events.fifo`. The event envelope is
+  built from the persisted row and contains eventId, eventType, aggregateId,
+  correlationId, optional causationId, occurredAt, version and the immutable
+  JSON data snapshot.
+* PostgreSQL claims use `FOR UPDATE SKIP LOCKED`, a `claimed_at` lease and a
+  persisted `claim_token`. A publisher may mark or retry only the claim token
+  it owns, so an abandoned publisher cannot overwrite a recovered claim.
+* Claims increment attempts before publication. Failed publication returns the
+  row to PENDING with exponential backoff; reaching the configured maximum
+  changes it to FAILED for durable operator-visible retention. A successful
+  publication changes it to PUBLISHED. Ambiguous publication is retried with
+  the same eventId and SQS MessageDeduplicationId.
+* Outbox rows receive a durable database ordering ID when created. A row is
+  eligible only when every earlier row for the same aggregate is PUBLISHED.
+  This prevents a later event from bypassing a pending, claimed, retryable or
+  FAILED predecessor. A FAILED predecessor therefore blocks later events for
+  that aggregate until an operator repairs or republishes it; this preserves
+  the ordering guarantee rather than silently publishing an incomplete
+  aggregate history. Different aggregates remain eligible in parallel.
+* MessageGroupId is the aggregate ID. It preserves broker ordering only after
+  the database claim protocol has established publication order; SQS FIFO does
+  not reorder messages sent by competing publishers. This destination,
+  ordering policy and schedule are architectural decisions, not domain
+  requirements recovered from the challenge.
+* The worker owns an explicit lifecycle context and stops before PostgreSQL is
+  closed. Process-crash injection and failure attacks remain Loop 11 scope.
+
 ---
 
 # 35. Current Status
@@ -1137,7 +1172,7 @@ Decision:
 Architecture status:
 
 ```text
-LOOP 8 IMPLEMENTED — PENDING HUMAN REVIEW
+LOOP 9 IMPLEMENTED — PENDING HUMAN REVIEW
 ```
 
 Implementation status must not be inferred from this document.

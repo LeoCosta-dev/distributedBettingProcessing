@@ -10,6 +10,7 @@ following queue ARNs:
 ```text
 arn:aws:sqs:${AWS_REGION}:${AWS_ACCOUNT_ID}:wager-transactions.fifo
 arn:aws:sqs:${AWS_REGION}:${AWS_ACCOUNT_ID}:wager-transactions-dlq.fifo
+arn:aws:sqs:${AWS_REGION}:${AWS_ACCOUNT_ID}:wager-events.fifo
 ```
 
 ## Runtime consumer
@@ -47,6 +48,8 @@ to send to the DLQ.
 These responsibilities use distinct identities from the runtime consumer:
 
 - a producer has `sqs:GetQueueUrl` and `sqs:SendMessage` on the main queue;
+- the outbox publisher has `sqs:GetQueueUrl` and `sqs:SendMessage` only on the
+  `wager-events.fifo` queue. It does not receive, delete, or configure queues;
 - an operational DLQ role receives `GetQueueUrl`, `GetQueueAttributes`,
   `ReceiveMessage`, `DeleteMessage` and `ChangeMessageVisibility` only when it
   is responsible for inspecting or replaying DLQ messages;

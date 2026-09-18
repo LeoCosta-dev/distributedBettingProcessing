@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/fx"
 
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/application/financial"
@@ -66,6 +68,7 @@ func TestFxApplicationConsumerSurvivesStartupContextAndStopsPolling(t *testing.T
 		"OIDC_JWKS_URL":                        "http://localhost:8082/realms/wagering/protocol/openid-connect/certs",
 		"OAUTH_AUDIENCE":                       "wagering-api",
 		"LOG_LEVEL":                            "error",
+		"OUTBOX_ENABLED":                       "false",
 	} {
 		t.Setenv(key, value)
 	}
@@ -196,6 +199,153 @@ func TestFxApplicationConsumerSurvivesStartupContextAndStopsPolling(t *testing.T
 	}); err != nil {
 		t.Fatalf("message after Stop was not left for redelivery: %v", err)
 	}
+}
+
+func TestFxApplicationOutboxWorkerUsesClaimOneAfterStartup(t *testing.T) {
+	if os.Getenv("RUN_OUTBOX_FX_INTEGRATION") != "1" {
+		t.Skip("RUN_OUTBOX_FX_INTEGRATION=1 is required")
+	}
+	databaseURL := os.Getenv("DATABASE_URL")
+	endpoint := os.Getenv("AWS_ENDPOINT_URL")
+	if databaseURL == "" || endpoint == "" {
+		t.Skip("DATABASE_URL and AWS_ENDPOINT_URL are required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	region := valueOrIntegration(os.Getenv("AWS_REGION"), "us-east-1")
+	accessKeyID := valueOrIntegration(os.Getenv("AWS_ACCESS_KEY_ID"), "test")
+	secretAccessKey := valueOrIntegration(os.Getenv("AWS_SECRET_ACCESS_KEY"), "test")
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithRegion(region),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, "")),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	awsCfg.BaseEndpoint = aws.String(endpoint)
+	api := awssqs.NewFromConfig(awsCfg)
+	queue, err := api.GetQueueUrl(ctx, &awssqs.GetQueueUrlInput{QueueName: aws.String("wager-events.fifo")})
+	if err != nil {
+		t.Fatalf("get outbox queue: %v", err)
+	}
+
+	for key, value := range map[string]string{
+		"DATABASE_URL":                         databaseURL,
+		"AWS_REGION":                           region,
+		"AWS_ENDPOINT_URL":                     endpoint,
+		"AWS_ACCESS_KEY_ID":                    accessKeyID,
+		"AWS_SECRET_ACCESS_KEY":                secretAccessKey,
+		"SQS_WAGER_QUEUE":                      "unused-" + uuid.New().String() + ".fifo",
+		"SQS_WAGER_DLQ":                        "unused-dlq-" + uuid.New().String() + ".fifo",
+		"SQS_EVENT_QUEUE":                      "wager-events.fifo",
+		"SQS_VISIBILITY_TIMEOUT_SECONDS":       "2",
+		"SQS_WAIT_TIME_SECONDS":                "1",
+		"SQS_RETRY_VISIBILITY_BACKOFF_SECONDS": "0",
+		"SQS_MAX_MESSAGES":                     "1",
+		"OUTBOX_ENABLED":                       "true",
+		"OUTBOX_POLL_INTERVAL":                 "10ms",
+		"OUTBOX_BATCH_SIZE":                    "1",
+		"OUTBOX_BACKOFF":                       "0s",
+		"OUTBOX_CLAIM_LEASE":                   "1s",
+		"HTTP_ADDR":                            "127.0.0.1:0",
+		"HTTP_SHUTDOWN_TIMEOUT":                "5s",
+		"KEYCLOAK_REALM":                       "wagering",
+		"OIDC_ISSUER":                          "http://localhost:8082/realms/wagering",
+		"OIDC_JWKS_URL":                        "http://localhost:8082/realms/wagering/protocol/openid-connect/certs",
+		"OAUTH_AUDIENCE":                       "wagering-api",
+		"LOG_LEVEL":                            "error",
+	} {
+		t.Setenv(key, value)
+	}
+
+	isolationPool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	isolationTx, err := isolationPool.Begin(ctx)
+	if err != nil {
+		isolationPool.Close()
+		t.Fatal(err)
+	}
+	defer isolationPool.Close()
+	defer isolationTx.Rollback(ctx)
+	if _, err := isolationTx.Exec(ctx, `UPDATE outbox SET next_attempt_at=next_attempt_at`); err != nil {
+		t.Fatal(err)
+	}
+
+	writer, err := postgres.NewRepository(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	var server *transporthttp.Server
+	app := fx.New(Module(), fx.Populate(&server), fx.NopLogger)
+	started := false
+	t.Cleanup(func() {
+		if started {
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer stopCancel()
+			if err := app.Stop(stopCtx); err != nil {
+				t.Errorf("stop Fx application: %v", err)
+			}
+		}
+	})
+	startupCtx, cancelStartup := context.WithTimeout(ctx, 5*time.Second)
+	if err := app.Start(startupCtx); err != nil {
+		cancelStartup()
+		t.Fatal(err)
+	}
+	cancelStartup()
+	started = true
+
+	walletID := uuid.New()
+	if err := financial.NewService(writer).OpenWallet(ctx, walletID, "fx-outbox-player-"+walletID.String(), integrationMoney("25.00", "BRL"), time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	outbox := postgres.NewOutboxRepository(writer)
+	var event postgres.OutboxRecord
+	if err := eventuallyFx(ctx, func() (bool, error) {
+		record, findErr := outbox.FindFirstByTypeAndAggregate(ctx, "WalletBalanceChanged", walletID)
+		if errors.Is(findErr, pgx.ErrNoRows) {
+			return false, nil
+		}
+		if findErr != nil {
+			return false, findErr
+		}
+		event = record
+		return record.Status == "PUBLISHED", nil
+	}); err != nil {
+		t.Fatalf("wait for Fx outbox publication through ClaimOneRecord: %v", err)
+	}
+
+	if err := eventuallyFx(ctx, func() (bool, error) {
+		received, receiveErr := api.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+			QueueUrl:            queue.QueueUrl,
+			MaxNumberOfMessages: 1,
+			WaitTimeSeconds:     1,
+		})
+		if receiveErr != nil {
+			return false, receiveErr
+		}
+		for _, message := range received.Messages {
+			if strings.Contains(aws.ToString(message.Body), event.EventID.String()) {
+				if _, deleteErr := api.DeleteMessage(ctx, &awssqs.DeleteMessageInput{QueueUrl: queue.QueueUrl, ReceiptHandle: message.ReceiptHandle}); deleteErr != nil {
+					return false, deleteErr
+				}
+				return true, nil
+			}
+		}
+		return false, nil
+	}); err != nil {
+		t.Fatalf("outbox event was not received from LocalStack: %v", err)
+	}
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopCancel()
+	if err := app.Stop(stopCtx); err != nil {
+		t.Fatal(err)
+	}
+	started = false
 }
 
 func createFxIntegrationQueue(ctx context.Context, t *testing.T, api *awssqs.Client) (string, string) {
