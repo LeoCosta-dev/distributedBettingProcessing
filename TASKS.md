@@ -402,7 +402,8 @@ Guarantee durable event publication after financial commit.
 > `wager-events.fifo` destination. PostgreSQL claims use a transaction-scoped
 > lease and claim token; abandoned claims are recoverable by another worker.
 > Publication ambiguity can result in repeated delivery with the same eventId.
-> Process-crash injection remains Loop 11 scope.
+> Process-crash injection is verified by the controlled child-process attacks
+> documented in Loop 11.
 
 ---
 
@@ -458,26 +459,26 @@ Attack the implementation and find correctness gaps.
 
 ### Scenarios
 
-* [ ] duplicate HTTP
-* [ ] duplicate SQS
-* [ ] HTTP + SQS same operation
-* [ ] concurrent wallet writes
-* [ ] process crash before commit
-* [ ] process crash after commit
-* [ ] consumer crash before SQS delete
-* [ ] outbox publisher crash
-* [ ] PostgreSQL temporary outage
-* [ ] SQS temporary outage
-* [ ] pending reference during restart
-* [ ] multiple instances
-* [ ] replay after restart
-* [ ] 50 duplicate requests produce one financial movement
-* [ ] 100/80/80 concurrent-wallet scenario
-* [ ] three independent application processes
-* [ ] consumer crash after commit before delete
-* [ ] two outbox publishers
-* [ ] late reversal/reference scenarios
-* [ ] HTTP/SQS same operation
+* [x] duplicate HTTP
+* [x] duplicate SQS
+* [x] HTTP + SQS same operation
+* [x] concurrent wallet writes
+* [x] process crash before commit
+* [x] process crash after commit
+* [x] consumer crash before SQS delete
+* [x] outbox publisher crash
+* [x] PostgreSQL temporary outage
+* [x] SQS temporary outage
+* [x] pending reference during restart
+* [x] multiple instances
+* [x] replay after restart
+* [x] 50 duplicate requests produce one financial movement
+* [x] 100/80/80 concurrent-wallet scenario
+* [x] three independent application processes
+* [x] consumer crash after commit before delete
+* [x] two outbox publishers
+* [x] late reversal/reference scenarios
+* [x] HTTP/SQS same operation
 
 ### Verification
 
@@ -496,6 +497,16 @@ Regression test
   ↓
 Documentation
 ```
+
+> Loop 11 adds controlled process-crash tests using isolated child test
+> processes. A PostgreSQL failure and a killed process before commit both roll
+> back wallet, transaction, ledger and outbox writes. A consumer killed after durable inbox completion
+> but before SQS deletion safely redelivers, and a publisher killed after a
+> successful SQS send but before `MarkPublished` recovers the same durable
+> outbox event after its lease. PostgreSQL and SQS temporary dependency faults
+> are injected at their client/SQL boundaries and followed by real recovery
+> against PostgreSQL and LocalStack. The tests do not claim a host or container
+> power-loss simulation.
 
 ---
 
@@ -545,7 +556,7 @@ Documentation
 # Current Loop
 
 ```text
-Loop 9 — Transactional Outbox
+Loop 11 — Failure Engineering
 ```
 
 # Current Status

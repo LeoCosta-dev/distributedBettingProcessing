@@ -4,8 +4,8 @@ Backend challenge implementation for distributed wagering transaction processing
 
 ## Status
 
-Loop 9 is checkpointed with real PostgreSQL and LocalStack evidence. Loop 10
-is implemented and pending human review.
+Loops 9 and 10 are checkpointed with real PostgreSQL, LocalStack, Keycloak and
+Fx evidence. Loop 11 is implemented and pending human review.
 
 See:
 
@@ -20,10 +20,12 @@ Loop 7 includes the durable SQS inbox consumer and PostgreSQL/SQS readiness.
 Loop 8 adds durable pending-reference resolution with restartable retries.
 Loop 9 adds transactional outbox publication with recoverable claims and stable
 event IDs. Loop 10 adds structured diagnostics and Prometheus-compatible
-metrics; failure engineering remains pending. Its SQS integration tests are conditional for the
-default local gate, but a skipped test is not evidence; use an available
-compatible runtime to execute PostgreSQL and LocalStack when the integration
-gate applies.
+metrics. Loop 11 adds controlled failure attacks: rollback before commit,
+consumer crash after commit/before SQS delete, publisher crash after SQS send/
+before publication confirmation, and temporary PostgreSQL/SQS dependency
+failures. Its integration tests are conditional for the default local gate,
+but a skipped test is not evidence; use an available compatible runtime to
+execute PostgreSQL and LocalStack when the integration gate applies.
 
 The complete challenge delivery requirements are not claimed as implemented
 yet.

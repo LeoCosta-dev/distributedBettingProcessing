@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -273,6 +275,155 @@ type recordedDeleteQueue struct {
 	Queue
 	deleted chan struct{}
 	once    sync.Once
+}
+
+// crashBeforeDeleteQueue belongs only to the failure-engineering test harness.
+// It writes a signal after ProcessMessage has returned and then deliberately
+// never returns from DeleteMessage. The parent test kills this test process at
+// that precise acknowledgement window; production code has no crash hook.
+type crashBeforeDeleteQueue struct {
+	Queue
+	signalPath string
+	once       sync.Once
+}
+
+func (q *crashBeforeDeleteQueue) DeleteMessage(ctx context.Context, input *awssqs.DeleteMessageInput, options ...func(*awssqs.Options)) (*awssqs.DeleteMessageOutput, error) {
+	q.once.Do(func() {
+		if err := os.WriteFile(q.signalPath, []byte("after-commit-before-delete"), 0o600); err != nil {
+			panic(err)
+		}
+	})
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestLoop11ConsumerCrashAfterCommitBeforeDeleteHelper(t *testing.T) {
+	if os.Getenv("LOOP11_CONSUMER_CRASH_HELPER") != "1" {
+		return
+	}
+	fixture := requireLocalStack(t, true)
+	fixture.config.SQSWagerQueue = os.Getenv("LOOP11_WAGER_QUEUE")
+	queue, err := sqsinfrastructure.NewClient(context.Background(), fixture.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := postgres.NewRepository(context.Background(), fixture.databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	consumer := NewConsumer(&crashBeforeDeleteQueue{Queue: queue, signalPath: os.Getenv("LOOP11_SIGNAL_FILE")}, financial.NewService(db), Config{
+		ConsumerName:           os.Getenv("LOOP11_CONSUMER_NAME"),
+		VisibilityTimeout:      time.Second,
+		WaitTime:               time.Second,
+		RetryVisibilityBackoff: 0,
+	})
+	if err := consumer.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {}
+}
+
+func TestLoop11ConsumerProcessCrashAfterCommitBeforeDeleteRedeliversSafely(t *testing.T) {
+	fixture := requireLocalStack(t, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	topology := createSQSIntegrationTopology(ctx, t, fixture.api, 1, 5)
+	fixture.config.SQSWagerQueue = topology.mainName
+	fixture.config.SQSWagerDLQ = topology.dlqName
+	db, err := postgres.NewRepository(ctx, fixture.databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := financial.NewService(db)
+	walletID := uuid.New()
+	playerID := "loop11-crash-player-" + walletID.String()
+	if err := service.OpenWallet(ctx, walletID, playerID, moneyMustTest("100.00", "BRL"), time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	messageID := "loop11-crash-" + uuid.NewString()
+	providerID := "loop11-provider-" + uuid.NewString()
+	externalID := "loop11-external-" + uuid.NewString()
+	consumerName := "loop11-crash-consumer"
+	body := messageBody(messageID, providerID, externalID, "idem-"+messageID, playerID, walletID, "25.00")
+	signalPath := filepath.Join(t.TempDir(), "after-commit-before-delete")
+	child := exec.Command(os.Args[0], "-test.run=^TestLoop11ConsumerCrashAfterCommitBeforeDeleteHelper$")
+	child.Env = append(os.Environ(),
+		"LOOP11_CONSUMER_CRASH_HELPER=1",
+		"LOOP11_SIGNAL_FILE="+signalPath,
+		"LOOP11_WAGER_QUEUE="+topology.mainName,
+		"LOOP11_CONSUMER_NAME="+consumerName,
+	)
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if child.Process != nil {
+			_ = child.Process.Kill()
+			_, _ = child.Process.Wait()
+		}
+	})
+	if err := sendFIFO(ctx, fixture.api, topology.mainURL, body, walletID.String(), messageID); err != nil {
+		t.Fatal(err)
+	}
+	if err := eventually(ctx, func() (bool, error) {
+		_, err := os.Stat(signalPath)
+		return err == nil, nil
+	}); err != nil {
+		t.Fatalf("consumer did not enter post-commit/delete window: %v", err)
+	}
+	transaction, err := postgres.NewWagerTransactionRepository(db).FindByExternal(ctx, providerID, externalID)
+	if err != nil || transaction.State != string(wager.Processed) {
+		t.Fatalf("durable transaction before crash = %+v, error=%v", transaction, err)
+	}
+	inbox, err := postgres.NewInboxRepository(db).Find(ctx, consumerName, messageID)
+	if err != nil || inbox.CompletedAt == nil {
+		t.Fatalf("durable inbox before crash = %+v, error=%v", inbox, err)
+	}
+	if err := child.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Wait(); err == nil {
+		t.Fatal("crash helper unexpectedly exited cleanly")
+	}
+	child.Process = nil
+
+	queue, err := sqsinfrastructure.NewClient(ctx, fixture.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted := make(chan struct{})
+	restarted := NewConsumer(&recordedDeleteQueue{Queue: queue, deleted: deleted}, financial.NewService(db), Config{
+		ConsumerName:           consumerName,
+		VisibilityTimeout:      time.Second,
+		WaitTime:               time.Second,
+		RetryVisibilityBackoff: 0,
+	})
+	if err := restarted.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		_ = restarted.Stop(stopCtx)
+	})
+	if err := eventually(ctx, func() (bool, error) {
+		select {
+		case <-deleted:
+			return true, nil
+		default:
+			return false, nil
+		}
+	}); err != nil {
+		t.Fatalf("redelivery after consumer crash was not deleted: %v", err)
+	}
+	if count, countErr := postgres.NewWagerTransactionRepository(db).CountByExternal(ctx, providerID, externalID); countErr != nil || count != 1 {
+		t.Fatalf("transactions after crash redelivery = %d, error=%v", count, countErr)
+	}
+	if count, countErr := postgres.NewLedgerRepository(db).CountByTransaction(ctx, transaction.ID); countErr != nil || count != 1 {
+		t.Fatalf("ledger entries after crash redelivery = %d, error=%v", count, countErr)
+	}
 }
 
 func (q *recordedDeleteQueue) DeleteMessage(ctx context.Context, input *awssqs.DeleteMessageInput, options ...func(*awssqs.Options)) (*awssqs.DeleteMessageOutput, error) {

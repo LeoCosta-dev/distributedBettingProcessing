@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -15,7 +17,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/config"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/postgres"
+	sqsinfrastructure "github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/sqs"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/observability"
 )
 
@@ -34,6 +38,33 @@ type holdingPublisher struct {
 	once         sync.Once
 	releaseOnce  sync.Once
 	recorder     *recordingPublisher
+}
+
+// crashAfterSendPublisher is a test-only crash boundary. It delegates to the
+// real SQS publisher, signals only after SendEvent succeeds, and blocks before
+// Worker can call MarkPublished. The parent kills this test process, exercising
+// the committed-event recovery path without adding a production failpoint.
+type crashAfterSendPublisher struct {
+	delegate   EventPublisher
+	target     string
+	signalPath string
+	once       sync.Once
+}
+
+func (p *crashAfterSendPublisher) SendEvent(ctx context.Context, body, groupID, eventID string) error {
+	if err := p.delegate.SendEvent(ctx, body, groupID, eventID); err != nil {
+		return err
+	}
+	if eventID != p.target {
+		return nil
+	}
+	p.once.Do(func() {
+		if err := os.WriteFile(p.signalPath, []byte("after-send-before-mark-published"), 0o600); err != nil {
+			panic(err)
+		}
+	})
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func (p *holdingPublisher) releaseWait() {
@@ -516,6 +547,153 @@ func requireProductionOutboxIntegration(t *testing.T) {
 	t.Helper()
 	if os.Getenv("RUN_OUTBOX_PRODUCTION_INTEGRATION") != "1" {
 		t.Skip("RUN_OUTBOX_PRODUCTION_INTEGRATION=1 is required")
+	}
+}
+
+func TestLoop11OutboxPublisherCrashAfterSendHelper(t *testing.T) {
+	if os.Getenv("LOOP11_OUTBOX_CRASH_HELPER") != "1" {
+		return
+	}
+	ctx := context.Background()
+	db, err := postgres.NewRepository(ctx, os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	client, err := sqsinfrastructure.NewClient(ctx, config.Config{
+		AWSRegion: "us-east-1", AWSEndpointURL: os.Getenv("AWS_ENDPOINT_URL"), AWSAccessKeyID: "test", AWSSecretAccessKey: "test", SQSEventQueue: os.Getenv("LOOP11_EVENT_QUEUE"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := NewWorker(db, &crashAfterSendPublisher{delegate: client, target: os.Getenv("LOOP11_EVENT_ID"), signalPath: os.Getenv("LOOP11_SIGNAL_FILE")}, Config{ClaimLease: time.Second})
+	if _, err := worker.processOne(ctx, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	t.Fatal("outbox crash helper returned before parent terminated it")
+}
+
+func TestLoop11OutboxPublisherProcessCrashAfterSendRecoversCommittedEvent(t *testing.T) {
+	databaseURL := newIsolatedOutboxTestDatabaseURL(t)
+	endpoint := os.Getenv("AWS_ENDPOINT_URL")
+	if endpoint == "" {
+		t.Skip("AWS_ENDPOINT_URL is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db, err := postgres.NewRepository(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	eventID := insertOutboxTestEvent(t, db, time.Now().UTC())
+	before, err := postgres.NewOutboxRepository(db).FindByID(ctx, eventID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := newIsolatedOutboxSQSClient(t, ctx, endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signalPath := filepath.Join(t.TempDir(), "after-send-before-mark-published")
+	child := exec.Command(os.Args[0], "-test.run=^TestLoop11OutboxPublisherCrashAfterSendHelper$")
+	child.Env = append(loop11EnvironmentWithoutDatabaseURL(),
+		"DATABASE_URL="+databaseURL,
+		"LOOP11_OUTBOX_CRASH_HELPER=1",
+		"LOOP11_EVENT_QUEUE="+eventQueueName(t, ctx, client),
+		"LOOP11_EVENT_ID="+eventID.String(),
+		"LOOP11_SIGNAL_FILE="+signalPath,
+	)
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if child.Process != nil {
+			_ = child.Process.Kill()
+			_, _ = child.Process.Wait()
+		}
+	})
+	if err := eventuallyOutbox(ctx, func() (bool, error) {
+		_, err := os.Stat(signalPath)
+		return err == nil, nil
+	}); err != nil {
+		t.Fatalf("publisher did not enter post-send/mark window: %v", err)
+	}
+	claimed, err := postgres.NewOutboxRepository(db).FindByID(ctx, eventID)
+	if err != nil || claimed.Status != "CLAIMED" || claimed.PublishedAt != nil || claimed.ClaimToken == uuid.Nil {
+		t.Fatalf("outbox state before publisher crash = %+v, error=%v", claimed, err)
+	}
+	if err := child.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Wait(); err == nil {
+		t.Fatal("outbox crash helper unexpectedly exited cleanly")
+	}
+	child.Process = nil
+
+	restartedDB, err := postgres.NewRepository(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restartedDB.Close()
+	restartedClient, err := newIsolatedOutboxSQSClientForExistingQueue(ctx, endpoint, eventQueueName(t, ctx, client))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := NewWorker(restartedDB, restartedClient, Config{ClaimLease: time.Second})
+	if _, err := restarted.processOne(ctx, time.Now().UTC().Add(2*time.Second)); err != nil {
+		t.Fatalf("restart recovery: %v", err)
+	}
+	after, err := postgres.NewOutboxRepository(restartedDB).FindByID(ctx, eventID)
+	if err != nil || after.Status != "PUBLISHED" || after.PublishedAt == nil || after.OrderingID != before.OrderingID || string(after.Data) != string(before.Data) {
+		t.Fatalf("recovered outbox record = %+v, error=%v", after, err)
+	}
+	if after.EventID != eventID || after.Attempts != 2 {
+		t.Fatalf("event identity/attempts after recovery = %+v", after)
+	}
+}
+
+func loop11EnvironmentWithoutDatabaseURL() []string {
+	env := os.Environ()
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, "DATABASE_URL=") {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
+}
+
+func eventQueueName(t *testing.T, ctx context.Context, client *sqsinfrastructure.Client) string {
+	t.Helper()
+	queueURL, err := client.EventQueueURL(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(strings.TrimSuffix(queueURL, "/"), "/")
+	if len(parts) == 0 || parts[len(parts)-1] == "" {
+		t.Fatalf("event queue URL has no queue name: %q", queueURL)
+	}
+	return parts[len(parts)-1]
+}
+
+func newIsolatedOutboxSQSClientForExistingQueue(ctx context.Context, endpoint, queueName string) (*sqsinfrastructure.Client, error) {
+	return sqsinfrastructure.NewClient(ctx, config.Config{AWSRegion: "us-east-1", AWSEndpointURL: endpoint, AWSAccessKeyID: "test", AWSSecretAccessKey: "test", SQSEventQueue: queueName})
+}
+
+func eventuallyOutbox(ctx context.Context, fn func() (bool, error)) error {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		ok, err := fn()
+		if err != nil || ok {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 	}
 }
 

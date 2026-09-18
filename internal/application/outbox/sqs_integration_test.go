@@ -94,6 +94,50 @@ func TestOutboxPublishesToRealLocalStackFIFO(t *testing.T) {
 	}
 }
 
+// TestLoop11OutboxRecoversFromTemporarySQSEndpointOutage first uses an
+// unreachable endpoint, then restores the real LocalStack client. It verifies
+// that a broker failure only schedules durable retry work; it never rolls back
+// or loses the already committed event.
+func TestLoop11OutboxRecoversFromTemporarySQSEndpointOutage(t *testing.T) {
+	databaseURL := newIsolatedOutboxTestDatabaseURL(t)
+	endpoint := os.Getenv("AWS_ENDPOINT_URL")
+	if endpoint == "" {
+		t.Skip("AWS_ENDPOINT_URL is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	db, err := postgres.NewRepository(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	eventID := insertOutboxTestEvent(t, db, time.Now().UTC())
+	queue, err := newIsolatedOutboxSQSClient(t, ctx, endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unavailable, err := sqsinfrastructure.NewClient(ctx, config.Config{AWSRegion: "us-east-1", AWSEndpointURL: "http://127.0.0.1:1", AWSAccessKeyID: "test", AWSSecretAccessKey: "test", SQSEventQueue: eventQueueName(t, ctx, queue)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := NewWorker(db, unavailable, Config{Backoff: 0, ClaimLease: time.Second, MaxAttempts: 3})
+	if _, err := worker.processOne(ctx, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	record, err := postgres.NewOutboxRepository(db).FindByID(ctx, eventID)
+	if err != nil || record.Status != "PENDING" || record.Attempts != 1 || record.PublishedAt != nil {
+		t.Fatalf("outbox after temporary SQS outage = %+v, error=%v", record, err)
+	}
+	worker.publisher = queue
+	if _, err := worker.processOne(ctx, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	record, err = postgres.NewOutboxRepository(db).FindByID(ctx, eventID)
+	if err != nil || record.Status != "PUBLISHED" || record.EventID != eventID || record.Attempts != 2 {
+		t.Fatalf("outbox after SQS recovery = %+v, error=%v", record, err)
+	}
+}
+
 func TestWalletBalanceChangedWireContractAgainstRealLocalStack(t *testing.T) {
 	databaseURL := os.Getenv("DATABASE_URL")
 	endpoint := os.Getenv("AWS_ENDPOINT_URL")

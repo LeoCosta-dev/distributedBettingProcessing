@@ -1163,7 +1163,8 @@ Decision:
   ordering policy and schedule are architectural decisions, not domain
   requirements recovered from the challenge.
 * The worker owns an explicit lifecycle context and stops before PostgreSQL is
-  closed. Process-crash injection and failure attacks remain Loop 11 scope.
+  closed. Controlled process-crash and failure attacks are verified in
+  ADR-011.
 
 ## ADR-010 — Loop 10 observability
 
@@ -1210,7 +1211,43 @@ Consequences:
 Observability is process-local and diagnostic; it is not a financial state
 store. Counters reset on process restart, while financial and outbox state
 remain PostgreSQL-backed. OpenTelemetry and dashboards remain optional and
-outside this loop. Failure injection remains Loop 11 scope.
+outside this loop. Failure injection is documented and verified in ADR-011.
+
+## ADR-011 — Loop 11 failure engineering
+
+Status: IMPLEMENTED — PENDING HUMAN REVIEW
+Date: 2026-09-18
+
+Decision:
+
+* Failure tests use real PostgreSQL and LocalStack wherever the attacked
+  boundary requires them. A PostgreSQL trigger scoped to a test-only
+  correlation identity injects an error on the final outbox insert; because
+  wallet, transaction and ledger writes have already been attempted, it proves
+  rollback of the complete SQL transaction rather than a validation shortcut.
+  A separate child process is killed while that trigger holds a transaction
+  advisory lock, proving the same rollback behavior for a real process crash
+  before commit.
+* Consumer and outbox crash windows use isolated child test processes. The
+  consumer child is terminated only after durable inbox completion and before
+  `DeleteMessage`; a restarted consumer redelivers safely through the durable
+  inbox. The outbox child is terminated only after real `SendEvent` succeeds
+  and before `MarkPublished`; lease recovery republishes the same persisted
+  event identity and payload.
+* Temporary dependency faults are injected at the PostgreSQL/SQS client
+  boundary and recovery is then executed against the real service. This
+  demonstrates transaction rollback and durable retry/recovery without
+  changing production code or treating broker FIFO deduplication as financial
+  idempotency.
+
+Consequences:
+
+These are controlled process-failure and dependency-failure experiments, not
+host power-loss or container-kill simulations. The implementation continues to
+claim at-least-once event delivery: an event can be sent more than once after
+an ambiguous publisher failure, always with its stable event ID. Existing
+durable inbox, financial idempotency, ledger and outbox constraints remain the
+correction mechanisms; the failure harness adds no production failpoint.
 
 ---
 
@@ -1219,7 +1256,7 @@ outside this loop. Failure injection remains Loop 11 scope.
 Architecture status:
 
 ```text
-LOOP 10 IMPLEMENTED — PENDING HUMAN REVIEW
+LOOP 11 IMPLEMENTED — PENDING HUMAN REVIEW
 ```
 
 Implementation status must not be inferred from this document.
