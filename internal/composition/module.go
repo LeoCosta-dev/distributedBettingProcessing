@@ -1,6 +1,6 @@
 // Package composition wires the process together with Uber Fx: configuration,
-// PostgreSQL, the OIDC verifier, the application use cases and the HTTP adapter,
-// plus the lifecycle ordering of their shutdown.
+// PostgreSQL, SQS, the OIDC verifier, the application use cases and the HTTP
+// adapter, plus the lifecycle ordering of their shutdown.
 //
 // The package lives outside internal/fx on purpose so that the Fx import never
 // shares a name with the package it composes. The domain and the application
@@ -19,7 +19,9 @@ import (
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/config"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/keycloak"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/postgres"
+	sqsinfrastructure "github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/sqs"
 	transporthttp "github.com/leonardodacosta/distributedBettingProcessing/internal/transport/http"
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/transport/messaging"
 )
 
 // Module is the single Fx module of the API process.
@@ -29,11 +31,16 @@ func Module() fx.Option {
 			config.Load,
 			newLogger,
 			newDatabase,
+			newSQSClient,
 			newAuthenticator,
 			// The financial and read services are exposed to the transport only
 			// through their use case interfaces, keeping the adapter free of
 			// application implementation details.
-			fx.Annotate(financial.NewService, fx.As(new(transporthttp.FinancialUseCases))),
+			fx.Annotate(
+				financial.NewService,
+				fx.As(new(transporthttp.FinancialUseCases)),
+				fx.As(new(messaging.Processor)),
+			),
 			fx.Annotate(query.NewService, fx.As(new(transporthttp.QueryUseCases))),
 			fx.Annotate(
 				postgres.NewPostgresChecker,
@@ -41,9 +48,15 @@ func Module() fx.Option {
 				fx.ResultTags(`group:"health_checkers"`),
 			),
 			fx.Annotate(
+				newSQSChecker,
+				fx.As(new(transporthttp.Checker)),
+				fx.ResultTags(`group:"health_checkers"`),
+			),
+			fx.Annotate(
 				newHealthRegistry,
 				fx.ParamTags(`group:"health_checkers"`),
 			),
+			newSQSConsumer,
 			transporthttp.NewRouter,
 			newHTTPServer,
 		),
@@ -64,6 +77,12 @@ func newDatabase(cfg config.Config) (*postgres.Repository, error) {
 	return postgres.NewRepository(context.Background(), cfg.DatabaseURL)
 }
 
+func newSQSClient(cfg config.Config) (*sqsinfrastructure.Client, error) {
+	return sqsinfrastructure.NewClient(context.Background(), cfg)
+}
+
+func newSQSChecker(client *sqsinfrastructure.Client) transporthttp.Checker { return client }
+
 // newAuthenticator builds the OIDC verifier. Issuer and audience validation are
 // never relaxed; the JWKS endpoint is the configured internal URL.
 func newAuthenticator(cfg config.Config) (transporthttp.Authenticator, error) {
@@ -71,10 +90,20 @@ func newAuthenticator(cfg config.Config) (transporthttp.Authenticator, error) {
 }
 
 // newHealthRegistry collects every readiness check registered in the
-// health_checkers group. Adding the SQS check in a later loop means registering
-// one more checker; no handler or wiring change is required.
+// health_checkers group. PostgreSQL and SQS are both required dependencies.
 func newHealthRegistry(checkers []transporthttp.Checker) *transporthttp.HealthRegistry {
 	return transporthttp.NewHealthRegistry(checkers...)
+}
+
+func newSQSConsumer(client *sqsinfrastructure.Client, processor messaging.Processor, cfg config.Config, logger *slog.Logger) *messaging.Consumer {
+	return messaging.NewConsumer(client, processor, messaging.Config{
+		ConsumerName:           "wager-transaction-consumer",
+		VisibilityTimeout:      cfg.SQSVisibilityTimeout,
+		WaitTime:               cfg.SQSWaitTime,
+		MaxMessages:            cfg.SQSMaxMessages,
+		RetryVisibilityBackoff: cfg.SQSRetryVisibilityBackoff,
+		Logger:                 logger,
+	})
 }
 
 func newHTTPServer(cfg config.Config, router *transporthttp.Router, logger *slog.Logger) *transporthttp.Server {
@@ -87,13 +116,14 @@ func newHTTPServer(cfg config.Config, router *transporthttp.Router, logger *slog
 // registered first and the HTTP hook second. Shutdown therefore drains in-flight
 // requests before the pool is closed:
 //
-//  1. stop accepting new connections;
-//  2. let in-flight requests finish within the configured budget;
-//  3. if the budget expires, cancel the remaining work through its context and
+//  1. stop the SQS consumer and release in-flight messages;
+//  2. stop accepting new connections;
+//  3. let in-flight requests finish within the configured budget;
+//  4. if the budget expires, cancel the remaining work through its context and
 //     close the connections;
-//  4. close the remaining dependencies.
-func registerLifecycle(lifecycle fx.Lifecycle, db *postgres.Repository, server *transporthttp.Server, cfg config.Config, logger *slog.Logger) {
-	appendLifecycleHooks(lifecycle, db, server, cfg, logger)
+//  5. close the database pool.
+func registerLifecycle(lifecycle fx.Lifecycle, db *postgres.Repository, server *transporthttp.Server, consumer *messaging.Consumer, cfg config.Config, logger *slog.Logger) {
+	appendLifecycleHooks(lifecycle, db, server, cfg, logger, consumer)
 }
 
 type lifecycleDatabase interface {
@@ -108,7 +138,12 @@ type lifecycleServer interface {
 	Close() error
 }
 
-func appendLifecycleHooks(lifecycle fx.Lifecycle, db lifecycleDatabase, server lifecycleServer, cfg config.Config, logger *slog.Logger) {
+type lifecycleConsumer interface {
+	Start(context.Context) error
+	Stop(context.Context) error
+}
+
+func appendLifecycleHooks(lifecycle fx.Lifecycle, db lifecycleDatabase, server lifecycleServer, cfg config.Config, logger *slog.Logger, consumers ...lifecycleConsumer) {
 	lifecycle.Append(fx.Hook{
 		OnStop: func(context.Context) error {
 			db.Close()
@@ -138,4 +173,15 @@ func appendLifecycleHooks(lifecycle fx.Lifecycle, db lifecycleDatabase, server l
 			return nil
 		},
 	})
+	for _, consumer := range consumers {
+		consumer := consumer
+		lifecycle.Append(fx.Hook{
+			OnStart: func(ctx context.Context) error {
+				return consumer.Start(ctx)
+			},
+			OnStop: func(ctx context.Context) error {
+				return consumer.Stop(ctx)
+			},
+		})
+	}
 }

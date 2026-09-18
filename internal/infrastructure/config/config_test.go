@@ -47,6 +47,9 @@ func TestLoadReadsOIDCAndShutdownConfiguration(t *testing.T) {
 	if cfg.HTTPAddr != "127.0.0.1:18080" || cfg.ShutdownTimeout != 3*time.Second || cfg.LogLevelValue() != -4 {
 		t.Fatalf("runtime config = %+v", cfg)
 	}
+	if cfg.AWSRegion != "us-east-1" || cfg.SQSWagerQueue != "wager-transactions.fifo" || cfg.SQSVisibilityTimeoutSeconds() != 30 || cfg.SQSWaitTimeSeconds() != 10 {
+		t.Fatalf("SQS defaults = %+v", cfg)
+	}
 }
 
 func TestLoadRejectsInvalidConfiguration(t *testing.T) {
@@ -65,6 +68,14 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		{name: "invalid log level", setup: func(t *testing.T) {
 			setRequiredEnvironment(t)
 			t.Setenv("LOG_LEVEL", "trace")
+		}},
+		{name: "invalid SQS visibility", setup: func(t *testing.T) {
+			setRequiredEnvironment(t)
+			t.Setenv("SQS_VISIBILITY_TIMEOUT_SECONDS", "43201")
+		}},
+		{name: "invalid SQS wait time", setup: func(t *testing.T) {
+			setRequiredEnvironment(t)
+			t.Setenv("SQS_WAIT_TIME_SECONDS", "21")
 		}},
 	}
 	for _, test := range tests {

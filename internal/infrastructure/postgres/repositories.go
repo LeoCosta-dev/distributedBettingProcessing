@@ -201,6 +201,32 @@ func (r *InboxRepository) Insert(ctx context.Context, i InboxRecord) error {
 	return err
 }
 
+// InsertIfAbsent atomically establishes the durable message identity. A
+// conflict is not an error: the caller must inspect the existing row and
+// compare its payload hash before deciding whether this is a safe replay.
+func (r *InboxRepository) InsertIfAbsent(ctx context.Context, i InboxRecord) (bool, error) {
+	tag, err := r.db.exec.Exec(ctx, `INSERT INTO inbox (consumer_name,message_id,payload_hash,received_at,completed_at) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (consumer_name,message_id) DO NOTHING`, i.ConsumerName, i.MessageID, i.PayloadHash, i.ReceivedAt, i.CompletedAt)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+func (r *InboxRepository) Find(ctx context.Context, consumerName, messageID string) (InboxRecord, error) {
+	var record InboxRecord
+	var completedAt *time.Time
+	err := r.db.exec.QueryRow(ctx, `SELECT consumer_name,message_id,payload_hash,received_at,completed_at FROM inbox WHERE consumer_name=$1 AND message_id=$2`, consumerName, messageID).Scan(&record.ConsumerName, &record.MessageID, &record.PayloadHash, &record.ReceivedAt, &completedAt)
+	if completedAt != nil {
+		record.CompletedAt = completedAt
+	}
+	return record, err
+}
+
+func (r *InboxRepository) MarkCompleted(ctx context.Context, consumerName, messageID string, completedAt time.Time) error {
+	_, err := r.db.exec.Exec(ctx, `UPDATE inbox SET completed_at=$3 WHERE consumer_name=$1 AND message_id=$2`, consumerName, messageID, completedAt)
+	return err
+}
+
 type OutboxRepository struct{ db *Repository }
 
 func NewOutboxRepository(db *Repository) *OutboxRepository { return &OutboxRepository{db: db} }

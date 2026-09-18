@@ -255,10 +255,11 @@ document.
   * [x] reconcile request/response field names with the primary challenge
   * [x] confirm providerId is authoritative from authenticated identity
   * [x] reconcile the reconciliation response contract
-  * [ ] transition readiness to cover PostgreSQL and SQS in Loop 7
+  * [x] transition readiness to cover PostgreSQL and SQS in Loop 7
 
-The PostgreSQL-only readiness currently implemented for Loop 6 remains
-intentionally pending until the real SQS dependency is integrated in Loop 7.
+Readiness now includes PostgreSQL and SQS through the Loop 7 composition and
+was exercised against the running local dependencies. AWS/IAM policy
+enforcement remains a deployment verification responsibility.
 
 ---
 
@@ -270,45 +271,60 @@ Process financial operations through at-least-once messaging.
 
 ### Tasks
 
-* [ ] FIFO queue
-* [ ] DLQ
-* [ ] redrive configuration
-* [ ] SQS consumer
-* [ ] message envelope
-* [ ] message validation
-* [ ] inbox
-* [ ] inbox uniqueness
-* [ ] SQS → application command
-* [ ] retry
-* [ ] visibility timeout
-* [ ] graceful consumer shutdown
-* [ ] queue names and FIFO/DLQ contract
-* [ ] message envelope and command data fields
-* [ ] messageId and payload-hash identity
-* [ ] inbox transaction boundary and uniqueness
-* [ ] delete only after commit
-* [ ] business rejection acknowledgement
-* [ ] transient retry and backoff
-* [ ] malformed message handling
-* [ ] DLQ and attempt limits
-* [ ] SIGTERM stop polling and finish/release in-flight work
-* [ ] MessageGroupId and MessageDeduplicationId policy
-* [ ] HTTP/SQS application-use-case equivalence
-* [ ] broker credentials and policies
-* [ ] PostgreSQL and SQS readiness
-* [ ] real LocalStack/MiniStack integration
+* [x] FIFO queue
+* [x] DLQ
+* [x] redrive configuration
+* [x] SQS consumer
+* [x] message envelope
+* [x] message validation
+* [x] inbox
+* [x] inbox uniqueness
+* [x] SQS → application command
+* [x] retry
+* [x] visibility timeout
+* [x] graceful consumer shutdown
+* [x] queue names and FIFO/DLQ contract
+* [x] message envelope and command data fields
+* [x] messageId and payload-hash identity
+* [x] inbox transaction boundary and uniqueness
+* [x] delete only after commit
+* [x] business rejection acknowledgement
+* [x] transient retry and backoff
+* [x] malformed message handling
+* [x] DLQ and attempt limits
+* [x] SIGTERM stop polling and finish/release in-flight work
+* [x] MessageGroupId and MessageDeduplicationId policy
+* [x] HTTP/SQS application-use-case equivalence
+* [x] broker credential configuration
+* [x] minimum broker authorization policy documented
+* [ ] AWS/IAM broker-policy enforcement verification (deployment responsibility; LocalStack does not prove it)
+* [x] PostgreSQL and SQS readiness
+* [x] real PostgreSQL + LocalStack integration execution
 
 ### Verification
 
-* [ ] duplicate message
-* [ ] message redelivery
-* [ ] commit before delete
-* [ ] business rejection acknowledgement
-* [ ] transient failure retry
-* [ ] DLQ behavior
-* [ ] restart recovery
-* [ ] visibility and malformed-message behavior
-* [ ] HTTP/SQS equivalence
+* [x] duplicate message
+* [x] message redelivery
+* [x] commit before delete
+* [x] business rejection acknowledgement
+* [x] transient failure retry
+* [x] DLQ behavior with real broker execution
+* [x] restart recovery
+* [x] visibility and malformed-message behavior
+* [x] HTTP/SQS equivalence
+* [x] Fx consumer survives `OnStart` context completion and stops polling
+* [x] real readiness: PostgreSQL/SQS UP, each dependency DOWN, and recovery
+* [x] duplicate delivery through two real SQS consumers and separate PostgreSQL pools
+
+> Conditional tests remain conditional for the default local gate, but a
+> skipped test is not integration evidence. The Integration Evidence Gate in
+> `LOOPING.md` requires inspection of compatible installed runtimes and an
+> explicit real PostgreSQL/LocalStack execution before this checkpoint can be
+> marked verified. This Loop 7 correction run used the installed Podman and
+> podman-compose environment; the real tests cover FIFO topology/redrive,
+> consumer processing, durable inbox replay, delete-failure redelivery, DLQ,
+> Fx lifecycle and PostgreSQL/SQS readiness recovery. LocalStack does not
+> verify AWS IAM policy enforcement.
 
 ---
 
@@ -500,13 +516,13 @@ Documentation
 # Current Loop
 
 ```text
-Loop 6 — HTTP
+Loop 7 — SQS and Inbox
 ```
 
 # Current Status
 
 ```text
-COMPLETE — APPROVED
+IMPLEMENTED — CORRECTIONS VERIFIED — PENDING FINAL HUMAN REVIEW
 ```
 
 # Rules

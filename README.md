@@ -4,8 +4,9 @@ Backend challenge implementation for distributed wagering transaction processing
 
 ## Status
 
-Loop 6 HTTP is checkpointed. The complete distributed processing delivery is
-still in progress.
+Loop 6 HTTP is checkpointed and the Loop 7 SQS/inbox corrections have real
+PostgreSQL and LocalStack execution evidence. Loop 7 is pending final human
+review.
 
 See:
 
@@ -16,9 +17,12 @@ See:
 
 ## Current delivery status
 
-Loop 6 HTTP is checkpointed after review. SQS/inbox processing,
-pending-reference workers, transactional outbox, observability and failure
-engineering remain pending.
+Loop 7 includes the durable SQS inbox consumer and PostgreSQL/SQS readiness.
+Pending-reference workers, transactional outbox, observability and failure
+engineering remain pending. Its SQS integration tests are conditional for the
+default local gate, but a skipped test is not evidence; use an available
+compatible runtime to execute PostgreSQL and LocalStack when the integration
+gate applies.
 
 The complete challenge delivery requirements are not claimed as implemented
 yet.
@@ -31,11 +35,13 @@ yet.
 * AWS SQS
 * LocalStack
 * Keycloak
-* Docker Compose
+* a Compose-compatible runtime (for example Docker Compose or Podman Compose)
 
 ## Development
 
-The complete setup and execution instructions will be documented after the infrastructure and application flows are implemented.
+The checked-in Compose definition can be run with a compatible provider already
+available in the environment. The absence of a particular runtime executable
+does not by itself establish that integration is unavailable.
 
 ## Verification
 

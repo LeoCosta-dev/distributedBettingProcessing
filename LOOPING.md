@@ -277,7 +277,7 @@ Quando aplicável ao loop, execute também:
 - testes de recuperação;
 - testes de shutdown;
 - testes multi-instância;
-- reconstrução limpa com Docker Compose.
+- reconstrução limpa com um mecanismo Compose compatível disponível.
 
 Uma falha em qualquer gate aplicável deve ser corrigida antes da conclusão da execução.
 
@@ -288,6 +288,39 @@ Se algum gate não puder ser executado por limitação do ambiente, informe expl
 - qual gate não foi executado;
 - por que não foi executado;
 - qual garantia permanece sem verificação.
+
+### Integration Evidence Gate
+
+Quando um loop introduzir, modificar ou depender de integração com um serviço
+externo — por exemplo PostgreSQL, SQS/LocalStack, OIDC/Keycloak ou equivalente
+— a ausência do comando ou ferramenta primariamente esperada não é evidência
+suficiente para declarar a integração indisponível. Docker, Podman e qualquer
+outro runtime são mecanismos de execução possíveis, não requisitos normativos
+do protocolo.
+
+Antes de classificar uma integração como `NOT AVAILABLE`, o agente deve:
+
+1. inspecionar o ambiente existente;
+2. verificar runtimes, providers de compose e ferramentas compatíveis já
+   instalados;
+3. consultar `Makefile`, `README`, arquivos Compose, scripts de infraestrutura
+   e documentação relevante do projeto;
+4. tentar executar a infraestrutura pelo mecanismo compatível já disponível;
+5. não instalar software nem modificar a configuração da máquina apenas para
+   satisfazer este gate;
+6. subir as dependências reais necessárias quando isso for possível;
+7. executar explicitamente os testes reais de integração aplicáveis;
+8. separar o relatório em `EXECUTED`, `SKIPPED` e `NOT AVAILABLE`;
+9. não contar testes `SKIPPED` como evidência de integração;
+10. não apresentar um loop como integralmente verificado quando uma garantia
+    central depende de integração que não foi executada;
+11. quando a integração realmente não puder ser executada, registrar a
+    ferramenta ou dependência ausente, as alternativas investigadas, os
+    comandos tentados e o motivo técnico concreto da impossibilidade.
+
+O relatório deve distinguir evidência de código/transação de evidência obtida
+por execução real ou por injeção de falha. Uma garantia não observada em runtime
+não deve ser apresentada como se tivesse sido exercitada.
 
 ---
 

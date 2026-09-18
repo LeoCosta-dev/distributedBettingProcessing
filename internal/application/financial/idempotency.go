@@ -48,6 +48,11 @@ func canonicalPayloadHash(cmd Command) (string, error) {
 	return hex.EncodeToString(digest[:]), nil
 }
 
+// CanonicalPayloadHash exposes the application-owned hash used by all
+// transports. The caller-provided value is never authoritative; this helper is
+// only for transport validation and durable inbox identity.
+func CanonicalPayloadHash(cmd Command) (string, error) { return canonicalPayloadHash(cmd) }
+
 type persistedResult struct {
 	TransactionID uuid.UUID   `json:"transactionId"`
 	State         wager.State `json:"state"`

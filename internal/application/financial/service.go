@@ -18,10 +18,11 @@ import (
 )
 
 var (
-	ErrInvalidCommand      = errors.New("invalid financial command")
-	ErrReferenceInvalid    = errors.New("invalid reference")
-	ErrIdempotencyConflict = errors.New("idempotency conflict")
-	ErrReplayUnavailable   = errors.New("persisted idempotency result unavailable")
+	ErrInvalidCommand       = errors.New("invalid financial command")
+	ErrReferenceInvalid     = errors.New("invalid reference")
+	ErrIdempotencyConflict  = errors.New("idempotency conflict")
+	ErrReplayUnavailable    = errors.New("persisted idempotency result unavailable")
+	ErrInboxPayloadMismatch = errors.New("inbox payload hash mismatch")
 )
 
 const legacyIdentity = "legacy"
@@ -105,137 +106,16 @@ func (s *Service) OpenWallet(ctx context.Context, id uuid.UUID, playerID string,
 }
 
 func (s *Service) Process(ctx context.Context, cmd Command, now time.Time) (Result, error) {
-	var result Result
-	if err := validateCommand(cmd); err != nil {
-		return result, err
-	}
-	payloadHash, err := canonicalPayloadHash(cmd)
+	prepared, err := prepareCommand(cmd)
 	if err != nil {
-		return result, err
+		return Result{}, err
 	}
-	cmd.PayloadHash = payloadHash
+	cmd = prepared
+	var result Result
 	err = s.db.WithTx(ctx, func(ctx context.Context, tx *postgres.Repository) error {
-		tr := postgres.NewWagerTransactionRepository(tx)
-		existing, found, err := findExistingTransaction(ctx, tr, cmd)
-		if err != nil {
-			return err
-		}
-		if found {
-			result, err = replayResult(existing)
-			return err
-		}
-
-		wr := postgres.NewWalletRepository(tx)
-		w, err := wr.FindForUpdate(ctx, cmd.WalletID)
-		if err != nil {
-			return err
-		}
-		// A concurrent transaction may have committed after the first lookup
-		// while this request waited for the wallet lock. Resolve it again before
-		// applying any financial mutation.
-		existing, found, err = findExistingTransaction(ctx, tr, cmd)
-		if err != nil {
-			return err
-		}
-		if found {
-			result, err = replayResult(existing)
-			return err
-		}
-		txDomain, err := wager.New(cmd.ID.String(), cmd.ExternalID, cmd.ProviderID, cmd.WalletID.String(), cmd.Type, cmd.Amount)
-		if err != nil {
-			return err
-		}
-		if cmd.PlayerID != w.PlayerID {
-			return persistRejected(ctx, tx, cmd, w, now, txDomain, &result)
-		}
-		var reference *postgres.WagerTransactionRecord
-		if cmd.Type == wager.Refund || cmd.Type == wager.Rollback {
-			if cmd.ReferenceExternalID == "" {
-				return persistPendingReference(ctx, tx, cmd, w, now, txDomain, &result)
-			}
-			foundReference, findErr := tr.FindByExternal(ctx, cmd.ProviderID, cmd.ReferenceExternalID)
-			if errors.Is(findErr, pgx.ErrNoRows) {
-				return persistPendingReference(ctx, tx, cmd, w, now, txDomain, &result)
-			}
-			if findErr != nil {
-				return findErr
-			}
-			if !validReference(cmd, foundReference) {
-				return persistRejected(ctx, tx, cmd, w, now, txDomain, &result)
-			}
-			reference = &foundReference
-		}
-
-		before := w.Balance
-		after := before
-		movement := cmd.Amount.Minor()
-		direction := ledger.Debit
-		domainWallet, err := walletFromRecord(w)
-		if err != nil {
-			return err
-		}
-		var operationErr error
-		switch cmd.Type {
-		case wager.Bet:
-			direction, operationErr = ledger.Debit, domainWallet.Debit(cmd.Amount)
-		case wager.Win, wager.Refund:
-			direction, operationErr = ledger.Credit, domainWallet.Credit(cmd.Amount)
-		case wager.Rollback:
-			if reference.Type == string(wager.Bet) {
-				direction, operationErr = ledger.Credit, domainWallet.Credit(cmd.Amount)
-			} else {
-				direction, operationErr = ledger.Debit, domainWallet.Debit(cmd.Amount)
-			}
-		case wager.Loss:
-			movement = 0
-		default:
-			return ErrReferenceInvalid
-		}
-		state := wager.Processed
-		if operationErr != nil {
-			state = wager.Rejected
-		} else if movement > 0 {
-			after = domainWallet.Balance().Minor()
-		}
-		if err := txDomain.Transition(state); err != nil {
-			return err
-		}
-		result = Result{TransactionID: cmd.ID, State: state, Balance: after, Amount: cmd.Amount}
-		if err := insertTransaction(ctx, tx, cmd, result, now); err != nil {
-			return err
-		}
-		if state == wager.Processed && movement > 0 {
-			if err := wr.UpdateBalance(ctx, cmd.WalletID, after, w.Version+1, now); err != nil {
-				return err
-			}
-			value, err := moneyFromMinor(movement, cmd.Amount.Currency())
-			if err != nil {
-				return err
-			}
-			beforeMoney, err := moneyFromMinor(before, cmd.Amount.Currency())
-			if err != nil {
-				return err
-			}
-			afterMoney, err := moneyFromMinor(after, cmd.Amount.Currency())
-			if err != nil {
-				return err
-			}
-			entry, err := ledger.New(uuid.New().String(), cmd.WalletID.String(), cmd.ID.String(), direction, value, beforeMoney, afterMoney, now)
-			if err != nil {
-				return err
-			}
-			if err := postgres.NewLedgerRepository(tx).Insert(ctx, ledgerRecord(entry)); err != nil {
-				return err
-			}
-		}
-		version := int64(w.Version)
-		if state == wager.Processed && movement > 0 {
-			version++
-		}
-		if state == wager.Processed {
-			return insertFinancialEvents(ctx, tx, cmd.Type, cmd.WalletID, result, version, now, cmd.IdempotencyKey, movement > 0)
-		}
-		return insertEvent(ctx, tx, "WagerTransactionRejected", cmd.Type, cmd.ID, cmd.WalletID, result, version, now, cmd.IdempotencyKey)
+		var err error
+		result, err = s.processInTx(ctx, tx, cmd, now)
+		return err
 	})
 	if err == nil {
 		return result, nil
@@ -247,6 +127,202 @@ func (s *Service) Process(ctx context.Context, cmd Command, now time.Time) (Resu
 		return Result{}, ErrIdempotencyConflict
 	}
 	return s.resolveIdentityConflict(ctx, cmd)
+}
+
+// ProcessMessage atomically records an SQS inbox identity, executes the
+// financial command and marks the inbox record complete. A duplicate message
+// returns the persisted financial result and duplicate=true without applying
+// another balance mutation.
+func (s *Service) ProcessMessage(ctx context.Context, consumerName, messageID, payloadHash string, cmd Command, now time.Time) (result Result, duplicate bool, err error) {
+	prepared, err := prepareCommand(cmd)
+	if err != nil {
+		return Result{}, false, err
+	}
+	cmd = prepared
+	if cmd.PayloadHash != payloadHash {
+		return Result{}, false, ErrInboxPayloadMismatch
+	}
+	err = s.db.WithTx(ctx, func(ctx context.Context, tx *postgres.Repository) error {
+		inbox := postgres.NewInboxRepository(tx)
+		inserted, err := inbox.InsertIfAbsent(ctx, postgres.InboxRecord{
+			ConsumerName: consumerName,
+			MessageID:    messageID,
+			PayloadHash:  payloadHash,
+			ReceivedAt:   now,
+		})
+		if err != nil {
+			return err
+		}
+		if !inserted {
+			existing, findErr := inbox.Find(ctx, consumerName, messageID)
+			if findErr != nil {
+				return findErr
+			}
+			if existing.PayloadHash != payloadHash {
+				return ErrInboxPayloadMismatch
+			}
+			duplicate = existing.CompletedAt != nil
+		}
+
+		result, err = s.processInTx(ctx, tx, cmd, now)
+		if err != nil {
+			return err
+		}
+		return inbox.MarkCompleted(ctx, consumerName, messageID, now)
+	})
+	if err == nil {
+		return result, duplicate, nil
+	}
+	// An identity race must roll back the inbox together with every financial
+	// write. In particular, do not resolve it through Process (which owns an
+	// independent transaction) and then complete the inbox later: that would
+	// expose a committed financial result without its durable inbox completion.
+	// The message remains unacknowledged and follows the configured permanent
+	// failure/redrive policy instead.
+	if isKnownIdentityViolation(err) {
+		return Result{}, false, ErrIdempotencyConflict
+	}
+	return Result{}, false, err
+}
+
+func prepareCommand(cmd Command) (Command, error) {
+	if err := validateCommand(cmd); err != nil {
+		return Command{}, err
+	}
+	payloadHash, err := canonicalPayloadHash(cmd)
+	if err != nil {
+		return Command{}, err
+	}
+	cmd.PayloadHash = payloadHash
+	return cmd, nil
+}
+
+func (s *Service) processInTx(ctx context.Context, tx *postgres.Repository, cmd Command, now time.Time) (Result, error) {
+	var result Result
+	tr := postgres.NewWagerTransactionRepository(tx)
+	existing, found, err := findExistingTransaction(ctx, tr, cmd)
+	if err != nil {
+		return result, err
+	}
+	if found {
+		result, err = replayResult(existing)
+		return result, err
+	}
+
+	wr := postgres.NewWalletRepository(tx)
+	w, err := wr.FindForUpdate(ctx, cmd.WalletID)
+	if err != nil {
+		return result, err
+	}
+	// A concurrent transaction may have committed after the first lookup
+	// while this request waited for the wallet lock. Resolve it again before
+	// applying any financial mutation.
+	existing, found, err = findExistingTransaction(ctx, tr, cmd)
+	if err != nil {
+		return result, err
+	}
+	if found {
+		result, err = replayResult(existing)
+		return result, err
+	}
+	txDomain, err := wager.New(cmd.ID.String(), cmd.ExternalID, cmd.ProviderID, cmd.WalletID.String(), cmd.Type, cmd.Amount)
+	if err != nil {
+		return result, err
+	}
+	if cmd.PlayerID != w.PlayerID {
+		err := persistRejected(ctx, tx, cmd, w, now, txDomain, &result)
+		return result, err
+	}
+	var reference *postgres.WagerTransactionRecord
+	if cmd.Type == wager.Refund || cmd.Type == wager.Rollback {
+		if cmd.ReferenceExternalID == "" {
+			err := persistPendingReference(ctx, tx, cmd, w, now, txDomain, &result)
+			return result, err
+		}
+		foundReference, findErr := tr.FindByExternal(ctx, cmd.ProviderID, cmd.ReferenceExternalID)
+		if errors.Is(findErr, pgx.ErrNoRows) {
+			return result, persistPendingReference(ctx, tx, cmd, w, now, txDomain, &result)
+		}
+		if findErr != nil {
+			return result, findErr
+		}
+		if !validReference(cmd, foundReference) {
+			err := persistRejected(ctx, tx, cmd, w, now, txDomain, &result)
+			return result, err
+		}
+		reference = &foundReference
+	}
+
+	before := w.Balance
+	after := before
+	movement := cmd.Amount.Minor()
+	direction := ledger.Debit
+	domainWallet, err := walletFromRecord(w)
+	if err != nil {
+		return result, err
+	}
+	var operationErr error
+	switch cmd.Type {
+	case wager.Bet:
+		direction, operationErr = ledger.Debit, domainWallet.Debit(cmd.Amount)
+	case wager.Win, wager.Refund:
+		direction, operationErr = ledger.Credit, domainWallet.Credit(cmd.Amount)
+	case wager.Rollback:
+		if reference.Type == string(wager.Bet) {
+			direction, operationErr = ledger.Credit, domainWallet.Credit(cmd.Amount)
+		} else {
+			direction, operationErr = ledger.Debit, domainWallet.Debit(cmd.Amount)
+		}
+	case wager.Loss:
+		movement = 0
+	default:
+		return result, ErrReferenceInvalid
+	}
+	state := wager.Processed
+	if operationErr != nil {
+		state = wager.Rejected
+	} else if movement > 0 {
+		after = domainWallet.Balance().Minor()
+	}
+	if err := txDomain.Transition(state); err != nil {
+		return result, err
+	}
+	result = Result{TransactionID: cmd.ID, State: state, Balance: after, Amount: cmd.Amount}
+	if err := insertTransaction(ctx, tx, cmd, result, now); err != nil {
+		return result, err
+	}
+	if state == wager.Processed && movement > 0 {
+		if err := wr.UpdateBalance(ctx, cmd.WalletID, after, w.Version+1, now); err != nil {
+			return result, err
+		}
+		value, err := moneyFromMinor(movement, cmd.Amount.Currency())
+		if err != nil {
+			return result, err
+		}
+		beforeMoney, err := moneyFromMinor(before, cmd.Amount.Currency())
+		if err != nil {
+			return result, err
+		}
+		afterMoney, err := moneyFromMinor(after, cmd.Amount.Currency())
+		if err != nil {
+			return result, err
+		}
+		entry, err := ledger.New(uuid.New().String(), cmd.WalletID.String(), cmd.ID.String(), direction, value, beforeMoney, afterMoney, now)
+		if err != nil {
+			return result, err
+		}
+		if err := postgres.NewLedgerRepository(tx).Insert(ctx, ledgerRecord(entry)); err != nil {
+			return result, err
+		}
+	}
+	version := int64(w.Version)
+	if state == wager.Processed && movement > 0 {
+		version++
+	}
+	if state == wager.Processed {
+		return result, insertFinancialEvents(ctx, tx, cmd.Type, cmd.WalletID, result, version, now, cmd.IdempotencyKey, movement > 0)
+	}
+	return result, insertEvent(ctx, tx, "WagerTransactionRejected", cmd.Type, cmd.ID, cmd.WalletID, result, version, now, cmd.IdempotencyKey)
 }
 
 func (s *Service) Reconcile(ctx context.Context, walletID uuid.UUID) (Reconciliation, error) {
