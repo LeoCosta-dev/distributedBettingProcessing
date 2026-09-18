@@ -374,12 +374,15 @@ The same canonicalization implementation/rules must be shared between HTTP and S
 
 The algorithm must be documented and covered by tests.
 
-The current canonical representation is JSON produced from the ordered business
-fields `externalId`, `providerId`, `walletId`, `playerId`, `gameId`, `roundId`,
-`referenceExternalId` (when present), `type` and the exact `{amount,currency}`
-money value. The internal request ID, idempotency key, caller-provided hash and
-transport metadata are excluded. The payload hash is the lowercase hexadecimal
-SHA-256 digest of that canonical JSON.
+Architectural decision for the current implementation, not a requirement
+attributed to CHALLENGE.md: the canonical representation is JSON produced from
+the ordered business fields `externalTransactionId`, `providerId`, `walletId`,
+`playerId`, `gameId`, `roundId`, `referenceExternalTransactionId` (when
+present), `kind` and the exact `{amount,currency}` value from `money`. The
+internal request ID, idempotency key, caller-provided hash and transport
+metadata are excluded. The payload hash is the lowercase hexadecimal SHA-256
+digest of that canonical JSON. The implementation's legacy aliases are tracked
+in ADR-006's conflict register and are not normative.
 
 ---
 
@@ -569,7 +572,7 @@ eventId
 eventType
 aggregateId
 correlationId
-causationId
+causationId (optional)
 occurredAt
 version
 data
@@ -923,62 +926,100 @@ Consequences:
 
 ## ADR-006 — Loop 6 HTTP and OIDC integration decisions
 
-Status: APPROVED FOR LOOP 6 IMPLEMENTATION
+Status: APPROVED FOR LOOP 6 IMPLEMENTATION; PROVENANCE RECONCILED
 Date: 2026-09-17
 
 Context:
 
 Loop 6 needs transport, identity, lifecycle and read-model decisions before
 its implementation can be reviewed. The normative SPEC was restored before
-these choices were made and intentionally retains the corresponding open
-specification gaps.
+the complete primary challenge source was available. The recovered
+`CHALLENGE.md` now shows that several of the following choices were already
+explicit or partially explicit in the primary source, while other values were
+selected later for the Loop 6 implementation.
 
 Decision:
 
-The following decisions were made later by the human Loop 6 review and are
-adopted by the current implementation:
+The following decisions are adopted by the current implementation. Their
+provenance is recorded individually; none is retroactively presented as a
+requirement recovered from the earlier truncated SPEC.
 
-* HTTP uses JSON. Money is represented on the wire as
+* **EXPLICIT IN CHALLENGE:** HTTP uses JSON. Money is represented on the wire as
   `{ "amount": "25.00", "currency": "BRL" }`.
-* HTTP errors use `{ "error": { "code": "...", "message": "..." } }`.
+* **HUMAN DECISION:** HTTP errors use
+  `{ "error": { "code": "...", "message": "..." } }`.
   `REJECTED` and `PENDING_REFERENCE` are HTTP 200 outcomes; wallet creation
   returns 201 and a duplicate wallet returns 409 with
   `WALLET_ALREADY_EXISTS`.
-* External wagering requests use the `Idempotency-Key` header. The
-  `idempotentReplay` indicator is returned only by POST wagering transactions
-  and is inferred from the returned transaction identity.
-* The provider identity comes exclusively from the authenticated
-  `provider_id` claim. Provider and internal roles are named `provider` and
-  `internal`, and the configured audience is `wagering-api`.
-* Provider routes require the `provider` role and `provider_id`; wallet,
-  administration and audit routes require `internal`. Provider-scoped reads
-  filter `provider_id` in SQL. Health routes are public.
-* Ledger reads use an opaque keyset cursor ordered by `(timestamp, id)`, with
-  default limit 50, maximum limit 100 and a `limit+1` query; OFFSET is not
-  used.
-* Liveness performs no dependency check. Loop 6 readiness checks PostgreSQL
-  only; SQS readiness is deferred to Loop 7.
-* OIDC uses go-oidc with real JWKS and RS256, with strict issuer, audience,
-  signature, `exp` and `nbf` validation. Issuer and JWKS URLs may use
-  different network endpoints, provided they identify the same realm.
-* HTTP shutdown drains in-flight requests using a configurable ten-second
-  default before closing dependencies.
-* Internal wallet opening requires `openingBalance`; `0.00` creates a wallet
-  without a financial movement. Reconciliation is internal and read-only.
+* **EXPLICIT IN CHALLENGE:** External wagering requests use the
+  `Idempotency-Key` header. Canonical payload hashing excludes the key and
+  transport metadata.
+* **PARTIALLY EXPLICIT:** `idempotentReplay` is returned for replayed POST
+  wagering results; its exact implementation inference is a Loop 6 choice.
+* **PARTIALLY EXPLICIT:** The provider identity is authenticated and provider
+  isolation is required. The concrete `provider_id` claim mapping is a later
+  implementation choice.
+* **PARTIALLY EXPLICIT:** Provider and internal authorization is required and
+  health is public. The concrete role names `provider` and `internal`, the
+  `wagering-api` audience and the route-by-route matrix were selected for Loop
+  6.
+* **PARTIALLY EXPLICIT:** Ledger reads use keyset pagination ordered by
+  `(timestamp, id)`. Default 50, maximum 100, opaque cursor and `limit+1`
+  are Loop 6 choices implementing that requirement; OFFSET is not used.
+* **EXPLICIT IN CHALLENGE:** Health checks are public, liveness is required,
+  and readiness covers PostgreSQL and SQS. **HUMAN DECISION:** Loop 6
+  liveness performs no dependency check and its SQS readiness portion is
+  deferred to Loop 7; this is not the final readiness architecture.
+* **EXPLICIT IN CHALLENGE:** An external OAuth 2.0/OIDC IdP, authenticated
+  identity, provider isolation and appropriate authorization are required.
+  **HUMAN DECISION:** the issuer, audience, signature-validation policy,
+  `exp`/`nbf` policy, clock-skew policy, go-oidc, real JWKS, RS256 and the
+  allowance for distinct network endpoints identifying one realm are concrete
+  adapter decisions, not requirements selected by the primary source.
+* **HUMAN DECISION:** HTTP shutdown uses a configurable ten-second default to
+  drain in-flight requests before dependencies close.
+* **EXPLICIT IN CHALLENGE:** Internal wallet opening requires the documented
+  opening balance contract; `0.00` creates a wallet without a financial
+  movement. **PARTIALLY EXPLICIT:** reconciliation is read-only and its
+  response is defined; the internal route/authentication boundary is a Loop 6
+  decision.
 
 Provenance:
 
-These are later human decisions for the Loop 6 implementation, not
-requirements originally recovered from the challenge or silently restored
-into SPEC.md. The related Open Specification Gaps remain preserved in
-SPEC.md; this ADR records the selected implementation decisions and their
-scope for review.
+The recovered primary source is authoritative for the items marked
+`EXPLICIT IN CHALLENGE` and the explicit portions of items marked
+`PARTIALLY EXPLICIT`. The remaining values were selected later by human
+review for the Loop 6 implementation; they are not requirements originally
+recovered by the first SPEC restoration. The related Open Specification Gaps
+remain preserved in SPEC.md for the portions still open. This ADR records the
+selected implementation decisions and their scope for review.
 
 Consequences:
 
 The Loop 6 adapters and composition may be reviewed against this ADR. It does
 not authorize SQS, inbox processing or outbox workers, which remain Loop 7
 scope, and it does not change the frozen financial core.
+
+### Loop 6 implementation conflict register
+
+The primary challenge defines the following HTTP names and behaviors that the
+current implementation must be reconciled against. These are conformance
+findings/provenance records, not new implementation decisions in this ADR:
+
+* `externalTransactionId` versus the implementation's `externalId`;
+* `kind` versus the implementation's `type`;
+* `money` versus the implementation's `amount`;
+* `status` versus the implementation's `state`;
+* `initialBalance` versus the implementation's `openingBalance`;
+* provider identity must be authoritative from authentication and must not be
+  selected by a request body field;
+* reconciliation response fields must follow the primary contract;
+* readiness must include PostgreSQL and SQS in the completed architecture,
+  while the Loop 6 implementation currently covers only PostgreSQL.
+
+These differences are conformance work for the appropriate future change;
+they do not authorize changing the financial core or treating current adapter
+behavior as normative.
 
 ---
 
@@ -987,7 +1028,7 @@ scope, and it does not change the frozen financial core.
 Architecture status:
 
 ```text
-PROPOSED
+LOOP 6 COMPLETE — APPROVED; FUTURE LOOPS PENDING
 ```
 
 Implementation status must not be inferred from this document.

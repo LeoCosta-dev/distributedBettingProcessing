@@ -245,6 +245,18 @@ Current Status: COMPLETE — APPROVED
 * [x] replay tests
 * [x] HTTP integration tests
 
+### Post-Loop 6 Conformance (before Loop 7)
+
+These unchecked items record primary-source contract reconciliation work. They
+do not reopen the approved Loop 6 checkpoint and are not complete in this
+document.
+
+* [ ] POST-LOOP-6 HTTP CONTRACT CONFORMANCE
+  * [ ] reconcile request/response field names with the primary challenge
+  * [ ] confirm providerId is authoritative from authenticated identity
+  * [ ] reconcile the reconciliation response contract
+  * [ ] transition readiness to cover PostgreSQL and SQS in Loop 7
+
 ---
 
 # Loop 7 — SQS and Inbox
@@ -267,6 +279,21 @@ Process financial operations through at-least-once messaging.
 * [ ] retry
 * [ ] visibility timeout
 * [ ] graceful consumer shutdown
+* [ ] queue names and FIFO/DLQ contract
+* [ ] message envelope and command data fields
+* [ ] messageId and payload-hash identity
+* [ ] inbox transaction boundary and uniqueness
+* [ ] delete only after commit
+* [ ] business rejection acknowledgement
+* [ ] transient retry and backoff
+* [ ] malformed message handling
+* [ ] DLQ and attempt limits
+* [ ] SIGTERM stop polling and finish/release in-flight work
+* [ ] MessageGroupId and MessageDeduplicationId policy
+* [ ] HTTP/SQS application-use-case equivalence
+* [ ] broker credentials and policies
+* [ ] PostgreSQL and SQS readiness
+* [ ] real LocalStack/MiniStack integration
 
 ### Verification
 
@@ -277,6 +304,8 @@ Process financial operations through at-least-once messaging.
 * [ ] transient failure retry
 * [ ] DLQ behavior
 * [ ] restart recovery
+* [ ] visibility and malformed-message behavior
+* [ ] HTTP/SQS equivalence
 
 ---
 
@@ -294,6 +323,9 @@ Recover reversals whose referenced transaction arrives later.
 * [ ] retry limit / TTL
 * [ ] reference resolution
 * [ ] reference expiration rejection
+* [ ] restartable exponential backoff
+* [ ] stable reference-not-found failureCode
+* [ ] pending/unsuccessful reference behavior
 
 ### Verification
 
@@ -324,6 +356,10 @@ Guarantee durable event publication after financial commit.
 * [ ] backoff
 * [ ] abandoned work recovery
 * [ ] event destination
+* [ ] atomic event creation with financial state
+* [ ] required event triggers and immutable snapshots
+* [ ] stable event IDs across republication
+* [ ] publication/confirmation failure windows
 
 ### Verification
 
@@ -387,6 +423,13 @@ Attack the implementation and find correctness gaps.
 * [ ] pending reference during restart
 * [ ] multiple instances
 * [ ] replay after restart
+* [ ] 50 duplicate requests produce one financial movement
+* [ ] 100/80/80 concurrent-wallet scenario
+* [ ] three independent application processes
+* [ ] consumer crash after commit before delete
+* [ ] two outbox publishers
+* [ ] late reversal/reference scenarios
+* [ ] HTTP/SQS same operation
 
 ### Verification
 
@@ -442,6 +485,12 @@ Documentation
 * [ ] recovery scenario
 * [ ] reconciliation
 * [ ] HTTP/SQS equivalence
+* [ ] real PostgreSQL, SQS and IdP integration
+* [ ] migrations up/down
+* [ ] clean Docker Compose startup
+* [ ] authenticated examples and test identities
+* [ ] multi-instance and failure simulations
+* [ ] gofmt, test, race and vet gates
 
 ---
 

@@ -5,20 +5,27 @@
 This document is the normative functional and technical specification for the
 distributed wagering transaction processor.
 
-This version restores the existing content of SPEC.md and consolidates
-decisions that are explicit in the project documentation. The source precedence
-used for the restoration is:
+SPEC.md was originally truncated before the implementation loops were planned.
+Its first restoration was performed without access to the complete primary
+challenge source and therefore preserved some decisions as gaps. The complete
+primary source was later recovered locally as CHALLENGE.md. This reconciliation
+restores requirements that are explicit in that source and preserves only
+decisions that the challenge genuinely leaves open.
 
-1. the content that existed in SPEC.md;
-2. explicit decisions in ARCHITECTURE.md;
-3. permanent requirements in AGENTS.md;
-4. requirements and acceptance criteria in TASKS.md;
-5. behavior already implemented and verified in Loops 0–5, only as auxiliary
-   evidence for decisions already determined by the sources above.
+The source precedence used for this reconciliation is:
 
-The sections before Open Specification Gaps are restored normative
-requirements. A gap is not a requirement: it records a decision that remains
-necessary but is not selected by this document.
+1. CHALLENGE.md, the primary normative source;
+2. this SPEC.md, as the internal derived specification;
+3. ARCHITECTURE.md, for architectural decisions and interpretations;
+4. TASKS.md, as the incremental execution plan;
+5. implementation, migrations and tests, only as auxiliary evidence and never
+   as a source for inventing requirements.
+
+The sections before Open Specification Gaps contain explicit and derived
+normative requirements restored from the primary source. A gap is not a
+requirement: it records a decision that the challenge still leaves open.
+Human decisions selected later for a loop must not be represented as if they
+had been recovered from CHALLENGE.md.
 
 The specification does not infer implementation completion from this document.
 Loop status and human-review state remain controlled by TASKS.md and the
@@ -63,11 +70,13 @@ These invariants must always hold.
 * External monetary values use strings with exactly two decimal places.
 * Currency uses ISO 4217 codes.
 * External financial inputs cannot be negative.
+* Empty values, NaN and Infinity are rejected.
 * Scientific notation is rejected.
 * Excessive decimal scale is rejected.
 * Invalid values are rejected instead of silently rounded.
 * Arithmetic between different currencies is rejected.
 * Integer overflow must be detected if int64 is used.
+* Persistence must preserve the exact amount and currency.
 * Internal calculations may temporarily contain negative values.
 * Wallet balances may never become negative.
 
@@ -200,6 +209,13 @@ The wallet row is the coordination boundary for financial concurrency. A
 solution must coordinate operations on the same wallet across independent
 processes and must not use a process-local lock as the financial guarantee.
 
+Wallet creation and rehydration are separate operations. A positive opening
+creates an internal OPENING transaction in PROCESSED, one CREDIT ledger entry
+and the corresponding WagerTransactionProcessed and WalletBalanceChanged
+outbox events in the same commit. A zero opening creates the wallet without an
+OPENING transaction, ledger entry or those financial events. A duplicate
+(playerId, currency) opening is rejected as a conflict.
+
 ---
 
 ## 5. Wager Transactions
@@ -231,6 +247,12 @@ OPENING is reserved for internal wallet creation. An external request
 containing OPENING must be rejected and must not create a provider
 transaction.
 
+OPENING requires a stable internal identity, wallet, player, currency, value,
+state and timestamps. External provider, external ID, idempotency key, payload
+hash, round, game and reference fields do not apply to its internal origin.
+The persistence model must distinguish internal and external operations and
+prevent duplicate initial credit.
+
 ### 5.2 Identity and fields
 
 A wagering transaction contains, when applicable:
@@ -242,13 +264,17 @@ A wagering transaction contains, when applicable:
 * playerId;
 * gameId;
 * roundId;
-* transaction type;
-* exact amount and currency;
+* transaction kind;
+* exact money amount and currency;
 * state;
 * idempotency key;
 * canonical payload hash;
 * persisted processing result;
-* referenceExternalId for reversal operations.
+* referenceExternalTransactionId for reversal operations.
+
+When applicable it also persists the resolved internal reference and a stable
+failureCode. The persisted result is the exact result returned to the
+provider, including the original balance snapshot.
 
 The external transaction identity is (providerId, externalTransactionId)
 and must be unique. The applicable idempotency identity is also unique in the
@@ -259,20 +285,24 @@ validated before a financial mutation is applied.
 
 ### 5.3 Operation rules
 
-The supported operation names are defined above. The normative sources
-explicitly establish the following financial rule for the required concurrency
-scenario:
+The normative operation matrix is:
 
-* BET is a debit.
-* A debit is rejected for insufficient balance without changing the wallet or
-  creating ledger movement.
-* A valid business rejection is durably recorded as REJECTED and does not
-  create an effective balance mutation.
+| Type | Movement | Required behavior |
+| --- | --- | --- |
+| BET | DEBIT | Positive value and sufficient balance. Insufficient balance is a durable REJECTED result with no wallet or ledger mutation. |
+| WIN | CREDIT | Positive value; may reference a BET from the same round. |
+| LOSS | None | Amount exactly `0.00`; no ledger entry and no wallet-version change. A processed LOSS emits WagerTransactionProcessed but not WalletBalanceChanged. |
+| REFUND | CREDIT | Positive value; returns the full value of a processed BET. The reference is mandatory. |
+| ROLLBACK | Opposite of original | Positive value; fully reverses a processed BET, WIN or REFUND. The reference is mandatory. |
 
-The sources do not determine the exact amount constraints and balance effects
-for WIN, LOSS, REFUND or ROLLBACK, which original transaction types each
-reversal type may reference, or the reversal direction. Those decisions remain
-Open Specification Gaps.
+REFUND and ROLLBACK references resolve by `(providerId,
+referenceExternalTransactionId)`. The operation and reference must agree in
+provider, player, wallet, currency and round. The reversal amount must equal
+the referenced amount; partial reversals are not supported. A reference cannot
+receive two successful reversals of the same type. The interaction between
+distinct reversal types remains open. A reversal that would debit more than
+the available balance is rejected and audited with a failureCode distinct from
+insufficient balance on BET.
 
 ### 5.4 Transaction states
 
@@ -311,7 +341,7 @@ belongs to messaging and recovery behavior.
 REFUND and ROLLBACK resolve their reference using:
 
 ~~~text
-(providerId, referenceExternalId)
+(providerId, referenceExternalTransactionId)
 ~~~
 
 Reference validation must check:
@@ -330,6 +360,12 @@ stored as PENDING_REFERENCE, without changing the wallet or ledger, and a
 pending-reference event is created transactionally. A later resolution either
 processes the reversal or rejects it.
 
+A reference worker retries with exponential backoff, including after restart.
+The policy must choose a maximum attempt count or TTL. Exhaustion produces a
+REJECTED result with a stable reference-not-found failureCode and rejection
+event. The behavior when the referenced transaction is still pending or has
+ended unsuccessfully must be defined by the pending-reference policy.
+
 The system must not allow two successful reversals of the same applicable
 type. The interaction and cardinality between distinct reversal types are not
 determined; see Open Specification Gaps.
@@ -343,8 +379,11 @@ the requested player, currency and non-negative opening balance, subject to the
 (playerId, currency) uniqueness invariant.
 
 For a positive opening balance, the operation creates an internal OPENING
-transaction, a credit ledger entry and the corresponding events atomically with
-wallet creation.
+transaction in PROCESSED, a CREDIT ledger entry and the corresponding
+WagerTransactionProcessed and WalletBalanceChanged events atomically with
+wallet creation. The opening version is 1. A zero opening creates only wallet
+state and no OPENING transaction, ledger entry or financial events. A duplicate
+opening for the same `(playerId, currency)` is a conflict.
 
 The internal opening operation must not be exposed as a provider wagering
 operation. External callers cannot submit OPENING through the wagering
@@ -356,15 +395,26 @@ transaction flow.
 
 The ledger is the append-only authoritative audit trail for reconciliation.
 
-Ledger entries are immutable and cannot be updated or deleted. Corrections
-create new financial entries instead of modifying previous entries. The
-relationship (walletId, transactionId) must prevent more than one corresponding
-ledger entry for the same wallet transaction.
+Each ledger entry contains id, walletId, transactionId, direction, value,
+balanceBefore, balanceAfter and creation timestamp. Direction is DEBIT or
+CREDIT, and the value and balances carry the wallet currency. Ledger entries
+are immutable and cannot be updated or deleted. Corrections create new
+financial entries instead of modifying previous entries. The relationship
+(walletId, transactionId) must prevent more than one corresponding ledger
+entry for the same wallet transaction.
+
+Ledger construction validates the movement equation:
+
+~~~text
+CREDIT: balanceAfter = balanceBefore + value
+DEBIT:  balanceAfter = balanceBefore - value
+~~~
+
+The database imposes uniqueness and protection against editing or deleting
+entries. LOSS and rejected operations do not create ledger entries.
 
 Every effective balance mutation creates exactly one corresponding ledger entry
-committed atomically with the balance update and transaction state. The exact
-ledger-entry schema and movement representation remain open; see Open
-Specification Gaps.
+committed atomically with the balance update and transaction state.
 
 
 ---
@@ -398,27 +448,13 @@ financial mutation.
 
 ### 8.2 Canonical payload and hash
 
-The canonical payload is JSON produced from these ordered business fields:
-
-~~~text
-externalId
-providerId
-walletId
-playerId
-gameId
-roundId
-referenceExternalId (when present)
-type
-amount
-~~~
-
-amount is the exact {amount,currency} money value. The internal request ID,
+The canonical payload must use deterministic JSON key ordering. The
 idempotency key, caller-provided hash and transport metadata are excluded.
-
-The payload hash is the lowercase hexadecimal SHA-256 digest of that canonical
-JSON. The same canonicalization rules must be used by HTTP and SQS processing
-before the application command is executed. The service calculates the hash;
-the caller-provided hash is not authoritative.
+The algorithm, complete business-field set, exact ordering and normalization
+rules are not selected by this specification; they must be documented by the
+chosen architecture and shared by HTTP and SQS before the application command
+is executed. The service calculates the hash; a caller-provided hash is not
+authoritative.
 
 ### 8.3 Replay and conflicts
 
@@ -434,9 +470,10 @@ must not re-execute the financial movement or reconstruct the response from the
 wallet's current balance. Its exact persisted representation and the behavior
 for each transaction state remain open; see Open Specification Gaps.
 
-If an existing record has no compatible canonical hash or no valid persisted
-result, it is not reprocessed. The attempt is refused as replay unavailable to
-preserve financial correctness.
+The handling of an existing record without a compatible canonical hash or a
+valid persisted result is not selected by this specification; see
+GAP-IDEMPOTENCY-001. No behavior for that edge case is restored from the
+primary source here.
 
 ---
 
@@ -489,13 +526,57 @@ case. The following method/path inventory is explicitly known:
 The adapter translates a request into the application command and must not
 reimplement transaction, reference, idempotency or authorization rules.
 
+### 10.1 Primary wire contracts
+
+The primary wallet-opening request is:
+
+~~~json
+{
+  "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
+  "initialBalance": { "amount": "1000.00", "currency": "BRL" }
+}
+~~~
+
+Its documented response contains `id`, `playerId`, `balance` and `version`.
+A positive opening creates OPENING and its ledger/events in the same commit;
+zero opening creates no financial movement; a duplicate `(playerId, currency)`
+opening is a conflict.
+
+The primary wagering request uses these names:
+
+~~~json
+{
+  "providerId": "provider-a",
+  "externalTransactionId": "transaction-123",
+  "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
+  "walletId": "0192f291-27dd-7d3f-8071-5f8685deef37",
+  "roundId": "round-987",
+  "gameId": "fortune-chimp",
+  "kind": "BET",
+  "money": { "amount": "25.00", "currency": "BRL" }
+}
+~~~
+
+The `Idempotency-Key` header is mandatory. The documented processed response
+uses `transactionId`, `status`, `balance` and `idempotentReplay`. For reversal
+requests, `referenceExternalTransactionId` is added to the body. The
+authenticated identity is authoritative for provider authorization; a
+providerId supplied by a caller must never override it.
+
+The primary reconciliation response contains `walletId`, `storedBalance`,
+`calculatedBalance`, `difference`, `consistent` and `checkedEntries`.
+`difference` is stored balance minus reconstructed ledger balance. Reconciliation
+is read-only and divergences are reported in the response, structured logs and
+a metric.
+
 Business endpoints require real OAuth 2.0/OIDC authentication and provider
 authorization. Provider-scoped transaction data, including replays, must be
 isolated by provider before any data access or financial side effect.
 
-This section records only the contract known from the sources. It intentionally
-does not assign HTTP status codes, an error envelope, exact request/response
-schemas, or an exact token claim; those remain open gaps below.
+This section records the schemas and names explicitly provided by the primary
+source. It intentionally does not assign HTTP status codes, an error envelope,
+or an exact token claim; those remain open gaps below. The primary field names
+must not be replaced by implementation-specific aliases.
 
 ---
 
@@ -528,8 +609,16 @@ selected here; see Open Specification Gaps.
 ## 12. SQS Processing
 
 SQS processing assumes at-least-once delivery. The local infrastructure
-provisions a FIFO wagering queue and a FIFO dead-letter queue with redrive
-configuration. FIFO deduplication is not the financial idempotency mechanism.
+provisions the FIFO queues `wager-transactions.fifo` and
+`wager-transactions-dlq.fifo` with redrive configuration. FIFO deduplication is
+not the financial idempotency mechanism.
+
+The requested message envelope contains `messageId`, `type`, `occurredAt` and
+`data`. The wagering `data` contains providerId, externalTransactionId,
+idempotencyKey, playerId, walletId, roundId, gameId, kind and the `{amount,
+currency}` money object. `data.idempotencyKey` is the financial idempotency
+key. The consumer uses the envelope messageId as its durable message identity
+and validates the message hash on redelivery.
 
 The SQS consumer must:
 
@@ -547,20 +636,28 @@ Duplicate delivery must not execute the financial operation twice. A message
 redelivered after a commit but before SQS deletion must be recognized by the
 durable inbox and/or financial idempotency records.
 
+Business rejections are terminal and may be deleted after durable commit.
+Transient failures use retry with backoff. Permanent failures or exhausted
+attempts reach the DLQ. The implementation must document malformed-message
+handling, attempt limits, visibility timeout, MessageGroupId and
+MessageDeduplicationId. On SIGTERM, polling stops and in-flight work either
+finishes within the deadline or releases visibility for safe redelivery.
+
 ---
 
 ## 13. Inbox
 
-Inbox records are durable PostgreSQL records. Their identity is:
+Inbox records are durable PostgreSQL records. They include message identity,
+consumer identity, payload hash, receipt and completion information. Their
+identity is:
 
 ~~~text
 (consumerName, messageId)
 ~~~
 
-The database enforces uniqueness for that identity. An inbox record contains,
-when applicable, the information necessary to identify the message and its
-processing state. The exact inbox schema, fields and interrupted-processing
-representation remain open; see Open Specification Gaps.
+The database enforces uniqueness for that identity. The exact interrupted
+processing state, hash-mismatch behavior and claim/recovery representation
+remain open; see Open Specification Gaps.
 
 Inbox completion and the financial operation caused by the message share the
 same database transaction. A duplicate message must not cause the financial
@@ -574,6 +671,12 @@ completed inbox record behind.
 Integration events are created in the same PostgreSQL transaction as the state
 changes they describe. Outbox publication is asynchronous and starts only
 after commit.
+
+The outbox stores a stable event identity, aggregate, event type, immutable
+payload snapshot, occurrence time, attempts, next-send time and publication
+state. The publisher must survive the windows between commit and publication
+and between publication and confirmation, including by allowing another
+publisher to recover abandoned work.
 
 The outbox worker must support:
 
@@ -602,6 +705,15 @@ WalletBalanceChanged
 WagerTransactionPendingReference
 ~~~
 
+The event triggers are:
+
+| Event | Trigger |
+| --- | --- |
+| WagerTransactionProcessed | Successful completion of an operation, including LOSS. |
+| WagerTransactionRejected | Definitive business rejection. |
+| WalletBalanceChanged | Effective wallet balance change. |
+| WagerTransactionPendingReference | Durable wait for a missing reference. |
+
 Events contain:
 
 ~~~text
@@ -609,7 +721,7 @@ eventId
 eventType
 aggregateId
 correlationId
-causationId
+causationId (optional)
 occurredAt
 version
 data
@@ -617,8 +729,11 @@ data
 
 Event payloads are immutable snapshots of the state they describe. Money is
 serialized as decimal strings, and timestamps use UTC RFC 3339. The exact
-conditions for emitting each event, including WalletBalanceChanged, remain
-open; see Open Specification Gaps.
+conditions above are normative. The WalletBalanceChanged payload contains
+walletId, transactionId, direction, money, balanceBefore, balanceAfter and
+walletVersion. Event type and version are assigned by the event constructor.
+The exact version values, correlation/causation generation, ordering and
+additional event-specific data remain open; see Open Specification Gaps.
 
 ---
 
@@ -638,8 +753,12 @@ The known HTTP entry point is:
 POST /wallets/:walletId/reconciliation
 ~~~
 
-Its wire response and authorization details are not determined by the current
-sources.
+Its response contains `walletId`, `storedBalance`, `calculatedBalance`,
+`difference`, `consistent` and `checkedEntries`. `difference` is the stored
+balance minus the reconstructed ledger balance. Reconciliation is read-only,
+and divergences are reported in the response, structured logs and a metric.
+HTTP status mapping, concrete authorization and remediation policy remain
+open.
 
 ---
 
@@ -761,8 +880,8 @@ GET /health/live
 GET /health/ready
 ~~~
 
-Liveness indicates that the process is alive. Readiness checks required
-dependencies, primarily PostgreSQL and SQS. A dependency outage makes
+Liveness indicates that the process is alive. Readiness checks PostgreSQL and
+SQS. A dependency outage makes
 readiness fail without necessarily terminating the process.
 
 The exact readiness wire contract and probe policy remain open.
@@ -861,6 +980,15 @@ Required verification includes:
 * reconciliation tests;
 * go test -race.
 
+The required scenarios include fifty concurrent duplicate requests for one
+operation with exactly one financial movement; the two concurrent 80.00 BETs
+against a 100.00 wallet; independent wallets progressing in parallel; at least
+three independent application processes; consumer interruption after commit
+and before message deletion; competing outbox publishers; late REFUND or
+ROLLBACK references; application restart; and the same operation crossing
+HTTP and SQS. Integration tests use real PostgreSQL, the IdP and LocalStack or
+MiniStack containers where applicable.
+
 PostgreSQL, SQS and the IdP must not be entirely replaced by mocks in their
 integration tests.
 
@@ -894,30 +1022,17 @@ inspected sources do not determine sufficiently. No option below is selected.
 
 ### GAP-WAGER-001 — Per-operation financial semantics
 
-* Decision absent: exact amount constraints and balance effects for WIN, LOSS,
-  REFUND and ROLLBACK; which original transaction types each reversal type may
-  reference; reversal direction; and zero-value behavior by operation type.
-* Why necessary: the operation names and the general reference and reversal
-  invariants do not uniquely define the financial effect of every operation.
-* Sources inspected: the original truncated SPEC.md; AGENTS.md Financial
-  Rules, Money and Concurrency; ARCHITECTURE.md sections 14–15; TASKS.md Loop
-  3; Loop 3 implementation and tests as auxiliary evidence only.
-* Possible options, not selected: define a complete type-by-type operation
-  matrix, define only the reference/reversal matrix, or defer the remaining
-  details to the HTTP/SQS contract.
-
-### GAP-OPENING-001 — Zero-opening semantics
-
-* Decision absent: whether opening a wallet with a zero balance creates an
-  OPENING transaction, a ledger entry, corresponding events, or only wallet
-  state.
-* Why necessary: wallet creation and the financial audit trail need a
-  deterministic relationship even when no balance movement occurs.
-* Sources inspected: the original truncated SPEC.md; AGENTS.md Wallet and
-  Ledger; ARCHITECTURE.md sections 8 and 15; TASKS.md Loop 3 zero-value
-  verification; current implementation as auxiliary evidence only.
-* Possible options, not selected: record an explicit zero OPENING or record
-  only the wallet creation while reserving OPENING for an effective movement.
+* Decision absent: the interaction and cardinality between distinct reversal
+  types, including whether one referenced transaction may receive more than
+  one successful reversal of different types and how those combinations are
+  constrained.
+* Why necessary: CHALLENGE.md defines the operation matrix, same-type
+  duplicate protection and the need to document cross-type combinations, but
+  does not select the cross-type policy.
+* Sources inspected: CHALLENGE.md sections 7–8; the restored SPEC.md;
+  AGENTS.md Financial Rules; ARCHITECTURE.md section 15; TASKS.md Loop 3.
+* Possible options, not selected: one successful reversal per reference, one
+  per reversal type, or an explicitly constrained type combination.
 
 ### GAP-REVERSAL-001 — Cross-type reversal cardinality
 
@@ -926,9 +1041,9 @@ inspected sources do not determine sufficiently. No option below is selected.
   how distinct reversal types interact.
 * Why necessary: the prohibition on two successful reversals of the same
   applicable type does not determine the cardinality across distinct types.
-* Sources inspected: AGENTS.md Financial Rules; ARCHITECTURE.md section 15;
-  TASKS.md Loop 3; reversal migration and repository as auxiliary evidence
-  only.
+* Sources inspected: CHALLENGE.md section 7; AGENTS.md Financial Rules;
+  ARCHITECTURE.md section 15; TASKS.md Loop 3; reversal migration and
+  repository as auxiliary evidence only.
 * Possible options, not selected: one successful reversal per reference, one
   per reversal type, or an explicitly constrained type combination.
 
@@ -939,7 +1054,7 @@ inspected sources do not determine sufficiently. No option below is selected.
 * Why necessary: the transaction may carry game identity, but the existing
   reference-validation decisions do not determine whether it participates in
   reference matching.
-* Sources inspected: the original truncated SPEC.md; AGENTS.md; ARCHITECTURE.md
+* Sources inspected: CHALLENGE.md section 7; AGENTS.md; ARCHITECTURE.md
   section 15; TASKS.md Loop 3; current implementation as auxiliary evidence
   only.
 * Possible options, not selected: require a matching game identity, ignore it
@@ -947,43 +1062,34 @@ inspected sources do not determine sufficiently. No option below is selected.
 
 ### GAP-IDEMPOTENCY-001 — Replay result and internal identity details
 
-* Decision absent: the exact scope and fields of the applicable idempotency
-  identity; the exact persisted replay-result schema; the states for which a
-  replay result is returned; and any conflict behavior involving an internal
-  transaction identity beyond the external identity and idempotency cases
-  already specified.
-* Why necessary: persistent idempotency requires a reusable result, but the
-  sources do not define its complete representation or those additional
-  identity rules.
-* Sources inspected: AGENTS.md Idempotency; ARCHITECTURE.md sections 11–12;
-  TASKS.md Loop 4; current idempotency implementation as auxiliary evidence
-  only.
-* Possible options, not selected: define a versioned result snapshot, persist
-  the complete application result, or specify state-specific replay behavior.
-
-### GAP-LEDGER-001 — Ledger entry schema and movement representation
-
-* Decision absent: exact ledger-entry fields, whether direction and value are
-  stored, whether balanceBefore and balanceAfter are stored, the formal
-  movement equations, and the associated currency/amount constraints.
-* Why necessary: append-only auditability and one-entry-per-effective-mutation
-  do not by themselves determine the ledger record schema or movement model.
-* Sources inspected: AGENTS.md Ledger and Transactions; ARCHITECTURE.md
-  sections 8 and 13; TASKS.md Loops 2 and 3; migrations and implementation as
+* Decision absent from CHALLENGE.md: details beyond the explicit idempotency
+  contract, including the exact database scope of each identity, the physical
+  representation of the persisted result snapshot, and edge behavior for
+  states or conflicts not covered by the primary contract. The primary source
+  requires the hash algorithm, business fields and normalizations to be
+  documented but does not select them; any later architectural choice for
+  those details is not a restored challenge requirement.
+* Why necessary: CHALLENGE.md fixes the Idempotency-Key, deterministic
+  canonical JSON, excluded inputs, same-key outcomes, external-identity
+  behavior and original balance snapshot, but does not define every storage,
+  hashing or edge-case detail.
+* Sources inspected: CHALLENGE.md sections 9–10; AGENTS.md Idempotency;
+  ARCHITECTURE.md sections 11–12; TASKS.md Loop 4; current implementation as
   auxiliary evidence only.
-* Possible options, not selected: balance snapshots, signed entries, or a
-  separate movement model with independently reconstructed balances.
+* Possible options, not selected by this SPEC: a versioned result snapshot, a
+  complete application-result record, state-specific replay rules, or a later
+  architectural choice for the hashing details delegated by the challenge.
 
 ### GAP-HTTP-001 — HTTP wire schemas
 
-* Decision absent: exact request and response schemas, required/optional
-  fields, list/ordering behavior where applicable, and the external
-  representation of the persisted balance/result for each listed endpoint.
-* Why necessary: clients and integration tests need an unambiguous wire
-  contract, especially for money and replay results.
-* Sources inspected: existing SPEC.md; ARCHITECTURE.md sections 20–25;
-  AGENTS.md; TASKS.md Loop 6; Loop 0–5 application result types as auxiliary
-  evidence.
+* Decision absent: complete schemas for endpoints and fields not fully defined
+  by the primary examples, including optionality, list ordering and remaining
+  response details.
+* Why necessary: CHALLENGE.md defines the required wire names and principal
+  examples, but does not provide a complete schema for every listed endpoint.
+* Sources inspected: CHALLENGE.md section 9; existing SPEC.md;
+  ARCHITECTURE.md sections 20–25; AGENTS.md; TASKS.md Loop 6; Loop 0–5
+  application result types as auxiliary evidence.
 * Possible options, not selected: an OpenAPI contract, endpoint-specific JSON
   schemas, or a separately versioned API contract.
 
@@ -1005,9 +1111,9 @@ inspected sources do not determine sufficiently. No option below is selected.
   providerId, including behavior when it is absent or ambiguous.
 * Why necessary: provider isolation cannot be tested or enforced precisely
   without a deterministic identity mapping.
-* Sources inspected: AGENTS.md Authentication and Authorization;
-  ARCHITECTURE.md sections 21–22; TASKS.md Loops 6 and 10; local Keycloak
-  realm configuration.
+* Sources inspected: CHALLENGE.md sections 2 and 9; AGENTS.md Authentication
+  and Authorization; ARCHITECTURE.md sections 21–22; TASKS.md Loops 6 and 10;
+  local Keycloak realm configuration.
 * Possible options, not selected: sub, a dedicated provider claim, or a
   namespaced claim mapping.
 
@@ -1017,125 +1123,134 @@ inspected sources do not determine sufficiently. No option below is selected.
   details, clock-skew policy and the authorization matrix for each endpoint.
 * Why necessary: authentication and authorization are separate guarantees, and
   a valid token alone does not establish permission.
-* Sources inspected: AGENTS.md Authentication and Authorization;
-  ARCHITECTURE.md sections 21–22 and 31; TASKS.md Loop 6; local Keycloak realm
-  configuration.
+* Sources inspected: CHALLENGE.md section 2; AGENTS.md Authentication and
+  Authorization; ARCHITECTURE.md sections 21–22 and 31; TASKS.md Loop 6; local
+  Keycloak realm configuration.
 * Possible options, not selected: role-based access, scope-based access, or a
   combination with audience validation.
 
 ### GAP-HTTP-003 — Wallet opening and health access policy
 
-* Decision absent: who may invoke the listed POST /wallets endpoint, its
-  internal/external transport boundary, the identity and authorization it
-  requires, and whether health endpoints require authentication.
-* Why necessary: the route is listed, and the sources distinguish internal
-  wallet opening from provider operations, but do not define the access policy
-  or health exposure.
-* Sources inspected: AGENTS.md Authentication and Authorization;
-  ARCHITECTURE.md sections 21–25; TASKS.md Loops 6 and 11; existing SPEC.md.
-* Possible options, not selected: an internal caller identity, a separately
-  authenticated administrative identity, or an explicitly prohibited provider
-  identity.
+* Decision absent: the concrete internal identity and transport/authorization
+  mechanism used for wallet operations, and the network binding/exposure
+  details of the public health routes.
+* Why necessary: CHALLENGE.md requires wallet operations to be internal and
+  health to be public, but does not select the concrete identity, boundary or
+  authorization mechanism.
+* Sources inspected: CHALLENGE.md sections 2 and 9; AGENTS.md
+  Authentication and Authorization; ARCHITECTURE.md sections 21–25; TASKS.md
+  Loops 6 and 11; existing SPEC.md.
+* Possible options, not selected: an internal caller identity, an
+  administrator identity, or an explicitly defined transport boundary.
 
 ### GAP-HEALTH-001 — Readiness contract
 
 * Decision absent: exact readiness status/body, probe timeout and interval,
-  dependency set beyond the stated primary PostgreSQL/SQS checks, and startup
-  behavior while migrations or provisioning are incomplete.
-* Why necessary: deployment orchestration needs a deterministic readiness
-  contract.
-* Sources inspected: ARCHITECTURE.md section 25; TASKS.md Loops 6 and 10;
-  Docker Compose health checks; existing SPEC.md.
+  startup behavior while migrations or provisioning are incomplete, and probe
+  details beyond PostgreSQL and SQS.
+* Why necessary: CHALLENGE.md fixes PostgreSQL and SQS as readiness
+  dependencies, but deployment orchestration still needs a deterministic
+  response and startup policy.
+* Sources inspected: CHALLENGE.md sections 9 and 12; ARCHITECTURE.md section 25;
+  TASKS.md Loops 6 and 10; Docker Compose health checks; existing SPEC.md.
 * Possible options, not selected: dependency probes only, a startup state
   machine, or a health response with per-dependency details.
 
 ### GAP-SQS-001 — SQS message contract
 
-* Decision absent: exact message envelope, command field names and types,
-  message-ID source, message attributes, FIFO message-group policy and
-  validation rules.
-* Why necessary: HTTP/SQS equivalence and durable inbox identity depend on a
-  stable message contract.
-* Sources inspected: AGENTS.md HTTP and SQS; ARCHITECTURE.md sections 17–20
-  and 29; TASKS.md Loop 7; LocalStack queue bootstrap.
+* Decision absent: optional envelope/attribute fields, exact validation rules,
+  and the concrete FIFO MessageGroupId and MessageDeduplicationId policy.
+* Why necessary: CHALLENGE.md fixes the queue names, FIFO/DLQ arrangement,
+  envelope and principal command fields, but leaves these implementation
+  details open.
+* Sources inspected: CHALLENGE.md section 10; AGENTS.md HTTP and SQS;
+  ARCHITECTURE.md sections 17–20 and 29; TASKS.md Loop 7; LocalStack queue
+  bootstrap.
 * Possible options, not selected: a direct command envelope, a versioned event
   envelope, or a provider-defined envelope adapter.
 
 ### GAP-SQS-002 — Inbox duplicate and completion semantics
 
-* Decision absent: exact inbox schema and fields; behavior for the same
-  (consumerName, messageId) with a different payload hash; meaning of an
-  existing record with null completedAt; and the exact recovery/claim behavior
-  for an interrupted consumer.
-* Why necessary: uniqueness alone does not define safe handling of malformed or
-  partially completed deliveries.
-* Sources inspected: AGENTS.md Inbox; ARCHITECTURE.md section 17;
-  TASKS.md Loop 7; inbox migration and repository; existing SPEC.md.
-* Possible options, not selected: reject hash mismatch, treat the message ID as
+* Decision absent: behavior for a hash mismatch, an incomplete/null completion
+  record, and the exact claim/recovery state machine for an interrupted
+  consumer.
+* Why necessary: CHALLENGE.md fixes durable identity, payload hash,
+  transaction-bound completion and duplicate suppression, but does not choose
+  the handling policy for these exceptional records.
+* Sources inspected: CHALLENGE.md sections 6.5 and 10; AGENTS.md Inbox;
+  ARCHITECTURE.md section 17; TASKS.md Loop 7; inbox migration and repository;
+  existing SPEC.md.
+* Possible options, not selected: reject hash mismatch, treat message ID as
   authoritative, or maintain explicit inbox processing states.
 
 ### GAP-REFERENCE-001 — Pending-reference policy
 
-* Decision absent: worker ownership and claiming, exact polling schedule,
-  exponential-backoff formula, retry/TTL values, expiration behavior and the
-  event emitted when a reference expires.
-* Why necessary: PENDING_REFERENCE must eventually have deterministic
-  processing, rejection or retention behavior across restarts.
-* Sources inspected: AGENTS.md transactions and recovery; ARCHITECTURE.md
-  section 16; TASKS.md Loop 8; current environment defaults as auxiliary
-  evidence.
+* Decision absent: worker ownership and claiming, exact polling schedule and
+  backoff formula/values, retry/TTL values, and details of handling a pending
+  or unsuccessful referenced transaction.
+* Why necessary: CHALLENGE.md fixes restartable exponential backoff and
+  exhaustion as REJECTED with a stable reference-not-found code and rejection
+  event, but does not choose the concrete schedule or ownership policy.
+* Sources inspected: CHALLENGE.md sections 7 and 13; AGENTS.md transactions
+  and recovery; ARCHITECTURE.md section 16; TASKS.md Loop 8; current
+  environment defaults as auxiliary evidence.
 * Possible options, not selected: bounded attempts, time-based TTL, or a
   durable pending-work scheduler.
 
 ### GAP-OUTBOX-001 — Outbox publication and recovery policy
 
-* Decision absent: event destination and protocol, publication-success
-  definition, retry/backoff values, claim lease duration, abandoned-claim
-  recovery threshold and transition criteria for FAILED.
-* Why necessary: durable creation and stable IDs do not define how a publisher
-  safely completes or abandons a claim.
-* Sources inspected: AGENTS.md Outbox; ARCHITECTURE.md sections 18–19 and
-  29; TASKS.md Loop 9; outbox migration and repository.
+* Decision absent: destination/protocol, publication-success definition,
+  exact retry/backoff values, claim lease duration, abandonment threshold and
+  transition criteria for a terminal failure.
+* Why necessary: CHALLENGE.md fixes atomic creation, stable identity,
+  multiple publishers, claiming, retries, backoff, abandoned-work recovery
+  and the relevant publication windows, but does not choose these concrete
+  policies.
+* Sources inspected: CHALLENGE.md section 11; AGENTS.md Outbox;
+  ARCHITECTURE.md sections 18–19 and 29; TASKS.md Loop 9; outbox migration
+  and repository.
 * Possible options, not selected: SQS publication, another broker, or an
   application callback; lease-based or timestamp-based claim recovery.
 
 ### GAP-EVENT-001 — Event payload and metadata semantics
 
-* Decision absent: exact data schema for each event, meaning of version,
-  correlation/causation generation rules, ordering guarantees, timestamp
-  precision, event-ID generation strategy and the conditions for emitting each
-  event, including WalletBalanceChanged.
-* Why necessary: consumers need a stable integration contract even though the
-  event envelope fields and stable retry identity are already specified.
-* Sources inspected: ARCHITECTURE.md section 19; AGENTS.md transactions and
-  outbox; TASKS.md Loop 9; current event construction as auxiliary evidence.
+* Decision absent: version values, correlation/causation generation rules,
+  ordering guarantees, event-ID generation strategy and additional data
+  schemas beyond the explicitly defined event payloads.
+* Why necessary: CHALLENGE.md fixes the four event types, their principal
+  triggers, envelope, immutable snapshot, UTC timestamps and monetary string
+  representation, but does not define every metadata policy.
+* Sources inspected: CHALLENGE.md sections 11 and 12; ARCHITECTURE.md section 19;
+  AGENTS.md transactions and outbox; TASKS.md Loop 9; current event
+  construction as auxiliary evidence.
 * Possible options, not selected: one versioned schema per event type, a common
   snapshot schema, or consumer-specific payload versions.
 
 ### GAP-FAILURE-001 — Infrastructure failure classification
 
-* Decision absent: criteria for transient versus permanent failure, when and
-  how FAILED is durably recorded, retry ownership, deadlock/serialization
-  retry behavior and the result exposed for an interrupted operation.
-* Why necessary: the state machine names FAILED, while Loop 3 explicitly
-  aborts infrastructure failures and defers registration/recovery to later
-  loops.
-* Sources inspected: AGENTS.md Transactions and Context/Errors;
-  ARCHITECTURE.md sections 14 and 29; TASKS.md Loop 3 note and Loops 7, 9
-  and 11; current financial service as auxiliary evidence.
+* Decision absent: exact criteria for transient versus permanent failure,
+  retry ownership, deadlock/serialization retry policy, durable FAILED
+  recording details and the result exposed for an interrupted operation.
+* Why necessary: CHALLENGE.md requires no partial financial mutation and
+  distinguishes transient retry/backoff from permanent or exhausted DLQ
+  handling, but does not define every classification or ownership rule.
+* Sources inspected: CHALLENGE.md sections 3 and 10; AGENTS.md Transactions and
+  Context/Errors; ARCHITECTURE.md sections 14 and 29; TASKS.md Loop 3 note and
+  Loops 7, 9 and 11; current financial service as auxiliary evidence.
 * Possible options, not selected: retry then fail, an operator-reconciled
   failure state, or an inbox/outbox-owned failure record.
 
 ### GAP-RECON-001 — Reconciliation wire contract and remediation
 
-* Decision absent: response schema, status/error behavior, authorization,
-  whether reconciliation is read-only, and the controlled workflow for a
-  detected divergence.
-* Why necessary: detecting divergence and creating a correction are separate
-  operations with different financial risks.
-* Sources inspected: existing SPEC.md; ARCHITECTURE.md sections 13, 26 and
-  29; TASKS.md Loops 3 and 6; current reconciliation use case as auxiliary
-  evidence.
+* Decision absent: HTTP status/error mapping, concrete authorization
+  mechanism and any remediation workflow for a detected divergence.
+* Why necessary: CHALLENGE.md fixes the reconciliation response fields,
+  stored-minus-calculated difference, read-only behavior and divergence
+  response/log/metric, but does not authorize a correction workflow or define
+  the remaining transport details.
+* Sources inspected: CHALLENGE.md section 12; existing SPEC.md;
+  ARCHITECTURE.md sections 13, 26 and 29; TASKS.md Loops 3 and 6; current
+  reconciliation use case as auxiliary evidence.
 * Possible options, not selected: read-only reporting, an internal remediation
   command, or a separately approved correction workflow.
 
@@ -1147,19 +1262,21 @@ inspected sources do not determine sufficiently. No option below is selected.
 * Why necessary: the fixed two-decimal int64 representation is explicit for
   the current BRL scenario but does not by itself define the full currency
   domain.
-* Sources inspected: existing SPEC.md sections 2–3; AGENTS.md Money;
-  ARCHITECTURE.md section 6; current Money validation as auxiliary evidence.
+* Sources inspected: CHALLENGE.md section 6.1; existing SPEC.md sections 2–3;
+  AGENTS.md Money; ARCHITECTURE.md section 6; current Money validation as
+  auxiliary evidence.
 * Possible options, not selected: BRL-only support, a configured two-decimal
   currency set, or currency metadata with per-currency minor units.
 
 ### GAP-LIFECYCLE-001 — In-flight shutdown policy
 
-* Decision absent: graceful-shutdown deadline, whether in-flight HTTP/SQS work
-  must finish or be released, visibility-timeout extension behavior and the
-  exact worker stop order at deadline.
-* Why necessary: finish or safely release is a required safety property but
-  is not an executable lifecycle policy.
-* Sources inspected: AGENTS.md Context; ARCHITECTURE.md section 24;
-  TASKS.md Loops 7, 9 and 11; LOOPING.md sections 8, 11 and 14.
+* Decision absent: exact graceful-shutdown deadline, visibility-timeout
+  extension behavior and worker stop order at the deadline.
+* Why necessary: CHALLENGE.md requires stopping acceptance/polling and
+  finishing or safely releasing in-flight work within a deadline, but does not
+  choose the concrete deadline or worker policy.
+* Sources inspected: CHALLENGE.md sections 4 and 13; AGENTS.md Context;
+  ARCHITECTURE.md section 24; TASKS.md Loops 7, 9 and 11; LOOPING.md sections
+  8, 11 and 14.
 * Possible options, not selected: bounded drain, immediate cancellation with
   redelivery, or per-worker deadlines.

@@ -4,7 +4,8 @@ Backend challenge implementation for distributed wagering transaction processing
 
 ## Status
 
-Work in progress.
+Loop 6 HTTP is checkpointed. The complete distributed processing delivery is
+still in progress.
 
 See:
 
@@ -12,6 +13,15 @@ See:
 * `ARCHITECTURE.md` — architecture and engineering decisions;
 * `TASKS.md` — implementation loops and verification state;
 * `AGENTS.md` — engineering rules for AI-assisted development.
+
+## Current delivery status
+
+Loop 6 HTTP is checkpointed after review. SQS/inbox processing,
+pending-reference workers, transactional outbox, observability and failure
+engineering remain pending.
+
+The complete challenge delivery requirements are not claimed as implemented
+yet.
 
 ## Stack
 
