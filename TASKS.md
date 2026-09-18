@@ -514,49 +514,49 @@ Documentation
 
 ### Code
 
-* [ ] `gofmt`
-* [ ] `go test ./...`
-* [ ] `go test -race ./...`
-* [ ] `go vet ./...`
+* [x] `gofmt`
+* [x] `go test ./...`
+* [x] `go test -race ./...`
+* [x] `go vet ./...`
 
 ### Infrastructure
 
-* [ ] clean Docker Compose startup
-* [ ] migrations reproducible
-* [ ] Keycloak provisioning reproducible
-* [ ] queues reproducible
-* [ ] test identities reproducible
+* [x] clean Docker Compose startup
+* [x] migrations reproducible
+* [x] Keycloak provisioning reproducible
+* [x] queues reproducible
+* [x] test identities reproducible
 
 ### Documentation
 
-* [ ] README complete
-* [ ] ARCHITECTURE complete
-* [ ] `.env.example` complete
-* [ ] limitations documented
-* [ ] architecture decisions documented
+* [x] README complete
+* [x] ARCHITECTURE complete
+* [x] `.env.example` complete
+* [x] limitations documented
+* [x] architecture decisions documented
 
 ### Final verification
 
-* [ ] clean checkout
-* [ ] full test suite
-* [ ] concurrency scenario
-* [ ] duplicate scenario
-* [ ] recovery scenario
-* [ ] reconciliation
-* [ ] HTTP/SQS equivalence
-* [ ] real PostgreSQL, SQS and IdP integration
-* [ ] migrations up/down
-* [ ] clean Docker Compose startup
-* [ ] authenticated examples and test identities
-* [ ] multi-instance and failure simulations
-* [ ] gofmt, test, race and vet gates
+* [x] clean checkout
+* [x] full test suite
+* [x] concurrency scenario
+* [x] duplicate scenario
+* [x] recovery scenario
+* [x] reconciliation
+* [x] HTTP/SQS equivalence
+* [x] real PostgreSQL, SQS and IdP integration
+* [x] migrations up/down
+* [x] clean Docker Compose startup
+* [x] authenticated examples and test identities
+* [x] multi-instance and failure simulations
+* [x] gofmt, test, race and vet gates
 
 ---
 
 # Current Loop
 
 ```text
-Loop 11 — Failure Engineering
+Loop 12 — Final Quality Gate
 ```
 
 # Current Status

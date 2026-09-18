@@ -1095,7 +1095,7 @@ Evidence Gate.
 
 ## ADR-008 — Loop 8 pending-reference worker
 
-Status: IMPLEMENTED — PENDING HUMAN REVIEW
+Status: COMPLETED — CHECKPOINTED
 Date: 2026-09-18
 
 Decision:
@@ -1132,7 +1132,7 @@ Decision:
 
 ## ADR-009 — Transactional outbox publisher
 
-Status: IMPLEMENTED — PENDING HUMAN REVIEW
+Status: COMPLETED — CHECKPOINTED
 Date: 2026-09-18
 
 Decision:
@@ -1168,7 +1168,7 @@ Decision:
 
 ## ADR-010 — Loop 10 observability
 
-Status: IMPLEMENTED — PENDING HUMAN REVIEW
+Status: COMPLETED — CHECKPOINTED
 Date: 2026-09-18
 
 Decision:
@@ -1215,7 +1215,7 @@ outside this loop. Failure injection is documented and verified in ADR-011.
 
 ## ADR-011 — Loop 11 failure engineering
 
-Status: IMPLEMENTED — PENDING HUMAN REVIEW
+Status: COMPLETED — CHECKPOINTED
 Date: 2026-09-18
 
 Decision:
@@ -1256,7 +1256,7 @@ correction mechanisms; the failure harness adds no production failpoint.
 Architecture status:
 
 ```text
-LOOP 11 IMPLEMENTED — PENDING HUMAN REVIEW
+LOOP 12 IMPLEMENTED — PENDING HUMAN REVIEW
 ```
 
 Implementation status must not be inferred from this document.
