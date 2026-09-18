@@ -252,10 +252,13 @@ do not reopen the approved Loop 6 checkpoint and are not complete in this
 document.
 
 * [ ] POST-LOOP-6 HTTP CONTRACT CONFORMANCE
-  * [ ] reconcile request/response field names with the primary challenge
-  * [ ] confirm providerId is authoritative from authenticated identity
-  * [ ] reconcile the reconciliation response contract
+  * [x] reconcile request/response field names with the primary challenge
+  * [x] confirm providerId is authoritative from authenticated identity
+  * [x] reconcile the reconciliation response contract
   * [ ] transition readiness to cover PostgreSQL and SQS in Loop 7
+
+The PostgreSQL-only readiness currently implemented for Loop 6 remains
+intentionally pending until the real SQS dependency is integrated in Loop 7.
 
 ---
 

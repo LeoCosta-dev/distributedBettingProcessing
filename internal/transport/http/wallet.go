@@ -2,6 +2,7 @@ package http
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -29,7 +30,7 @@ func (r *Router) openWallet(w http.ResponseWriter, request *http.Request) {
 		r.writeError(w, request, err)
 		return
 	}
-	opening, err := body.OpeningBalance.toMoney("openingBalance")
+	opening, err := body.OpeningBalance.toMoney("initialBalance")
 	if err != nil {
 		r.writeError(w, request, err)
 		return
@@ -144,6 +145,11 @@ func (r *Router) reconcileWallet(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	reconciliation, err := r.financial.Reconcile(request.Context(), walletID)
+	checkedEntries, countErr := r.queries.LedgerEntryCount(request.Context(), walletID)
+	if countErr != nil {
+		r.writeError(w, request, countErr)
+		return
+	}
 	if errors.Is(err, postgres.ErrLedgerInconsistent) {
 		// The stored ledger is not internally consistent, so no ledger balance
 		// can be reconstructed. The inconsistency itself is the result.
@@ -153,10 +159,10 @@ func (r *Router) reconcileWallet(w http.ResponseWriter, request *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, reconciliationResponse{
-			WalletID:      walletID.String(),
-			Currency:      view.Currency,
-			WalletBalance: walletBalance,
-			Consistent:    false,
+			WalletID:       walletID.String(),
+			StoredBalance:  walletBalance,
+			Consistent:     false,
+			CheckedEntries: checkedEntries,
 		})
 		return
 	}
@@ -174,12 +180,18 @@ func (r *Router) reconcileWallet(w http.ResponseWriter, request *http.Request) {
 		r.writeError(w, request, err)
 		return
 	}
+	difference, err := walletBalance.Sub(ledgerBalance)
+	if err != nil {
+		r.writeError(w, request, fmt.Errorf("reconciliation difference: %w", err))
+		return
+	}
 	writeJSON(w, http.StatusOK, reconciliationResponse{
-		WalletID:      walletID.String(),
-		Currency:      view.Currency,
-		WalletBalance: walletBalance,
-		LedgerBalance: &ledgerBalance,
-		Consistent:    reconciliation.Consistent,
+		WalletID:          walletID.String(),
+		StoredBalance:     walletBalance,
+		CalculatedBalance: &ledgerBalance,
+		Difference:        &difference,
+		Consistent:        reconciliation.Consistent,
+		CheckedEntries:    checkedEntries,
 	})
 }
 

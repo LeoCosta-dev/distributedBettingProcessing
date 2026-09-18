@@ -63,8 +63,8 @@ func wireMoney(minor int64, currency string) (money.Money, error) {
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	decoder := json.NewDecoder(r.Body)
-	// Unknown fields are rejected: identity fields such as providerId must never
-	// be smuggled through the body, and typos must not be silently ignored.
+	// Unknown fields are rejected so legacy aliases and typos cannot be silently
+	// accepted as part of the public contract.
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		if errors.Is(err, io.EOF) {
@@ -80,24 +80,25 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) error {
 }
 
 type wageringTransactionRequest struct {
-	ExternalID          string   `json:"externalId"`
+	ProviderID          string   `json:"providerId"`
+	ExternalID          string   `json:"externalTransactionId"`
 	WalletID            string   `json:"walletId"`
 	PlayerID            string   `json:"playerId"`
 	GameID              string   `json:"gameId"`
 	RoundID             string   `json:"roundId"`
-	ReferenceExternalID string   `json:"referenceExternalId"`
-	Type                string   `json:"type"`
-	Amount              moneyDTO `json:"amount"`
+	ReferenceExternalID string   `json:"referenceExternalTransactionId"`
+	Type                string   `json:"kind"`
+	Amount              moneyDTO `json:"money"`
 }
 
 type openWalletRequest struct {
 	PlayerID       string   `json:"playerId"`
-	OpeningBalance moneyDTO `json:"openingBalance"`
+	OpeningBalance moneyDTO `json:"initialBalance"`
 }
 
 type wageringResultResponse struct {
 	TransactionID string       `json:"transactionId"`
-	State         string       `json:"state"`
+	State         string       `json:"status"`
 	Amount        money.Money  `json:"amount"`
 	Balance       *money.Money `json:"balance,omitempty"`
 	// IdempotentReplay is present only on POST /wagering/transactions, which is
@@ -106,7 +107,7 @@ type wageringResultResponse struct {
 }
 
 type walletResponse struct {
-	WalletID  string      `json:"walletId"`
+	WalletID  string      `json:"id"`
 	PlayerID  string      `json:"playerId"`
 	Currency  string      `json:"currency"`
 	Balance   money.Money `json:"balance"`
@@ -158,19 +159,17 @@ func externalType(raw string) (wager.Type, error) {
 	case wager.Opening:
 		return "", fmt.Errorf("%w: OPENING is reserved for internal wallet creation", errOpeningNotAllowed)
 	case "":
-		return "", badRequest("type is required")
+		return "", badRequest("kind is required")
 	default:
 		return "", fmt.Errorf("%w: %q", errUnsupportedType, raw)
 	}
 }
 
 type reconciliationResponse struct {
-	WalletID      string      `json:"walletId"`
-	Currency      string      `json:"currency"`
-	WalletBalance money.Money `json:"walletBalance"`
-	// LedgerBalance is null when the persisted ledger is not internally
-	// consistent, so no ledger balance can be reconstructed. The inconsistency
-	// is reported through Consistent and is never repaired here.
-	LedgerBalance *money.Money `json:"ledgerBalance"`
-	Consistent    bool         `json:"consistent"`
+	WalletID          string       `json:"walletId"`
+	StoredBalance     money.Money  `json:"storedBalance"`
+	CalculatedBalance *money.Money `json:"calculatedBalance"`
+	Difference        *money.Money `json:"difference"`
+	Consistent        bool         `json:"consistent"`
+	CheckedEntries    int64        `json:"checkedEntries"`
 }

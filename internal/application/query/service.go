@@ -179,6 +179,12 @@ func (s *Service) Ledger(ctx context.Context, walletID uuid.UUID, rawCursor stri
 	return page, nil
 }
 
+// LedgerEntryCount returns the persisted entry count without loading the
+// ledger. It is a read-only value used by reconciliation reporting.
+func (s *Service) LedgerEntryCount(ctx context.Context, walletID uuid.UUID) (int64, error) {
+	return s.ledger.CountByWallet(ctx, walletID)
+}
+
 // TransactionForProvider reads a transaction only when it belongs to the
 // authenticated provider. The provider filter is applied by PostgreSQL, so no
 // other provider's data is exposed.

@@ -58,6 +58,16 @@ func (r *LedgerQueryRepository) ListByWallet(ctx context.Context, walletID uuid.
 	return entries, nil
 }
 
+// CountByWallet returns the number of persisted ledger entries for a wallet.
+// It is used by read-only reconciliation reporting and does not load entries.
+func (r *LedgerQueryRepository) CountByWallet(ctx context.Context, walletID uuid.UUID) (int64, error) {
+	var count int64
+	if err := r.db.exec.QueryRow(ctx, `SELECT count(*) FROM wallet_ledger_entries WHERE wallet_id=$1`, walletID).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // WagerTransactionQueryRepository exposes provider-filtered transaction reads.
 //
 // The provider filter is applied by PostgreSQL itself, so provider isolation

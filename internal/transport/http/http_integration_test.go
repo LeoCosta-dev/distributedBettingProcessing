@@ -52,7 +52,7 @@ func TestHTTPFinancialFlowAgainstPostgreSQL(t *testing.T) {
 	defer server.Close()
 
 	client := server.Client()
-	openBody := `{"playerId":"` + playerID + `","openingBalance":{"amount":"100.00","currency":"BRL"}}`
+	openBody := `{"playerId":"` + playerID + `","initialBalance":{"amount":"100.00","currency":"BRL"}}`
 	openRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/wallets", strings.NewReader(openBody))
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +73,7 @@ func TestHTTPFinancialFlowAgainstPostgreSQL(t *testing.T) {
 
 	externalID := "http-external-" + uuid.New().String()
 	idempotencyKey := "http-idem-" + uuid.New().String()
-	transactionBody := `{"externalId":"` + externalID + `","walletId":"` + wallet.WalletID + `","playerId":"` + playerID + `","gameId":"game-1","roundId":"round-1","type":"BET","amount":{"amount":"25.08","currency":"BRL"}}`
+	transactionBody := `{"providerId":"` + providerID + `","externalTransactionId":"` + externalID + `","walletId":"` + wallet.WalletID + `","playerId":"` + playerID + `","gameId":"game-1","roundId":"round-1","kind":"BET","money":{"amount":"25.08","currency":"BRL"}}`
 	postTransactionAs := func(token, body, key string) (wageringResultResponse, *http.Response) {
 		request, requestErr := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/wagering/transactions", strings.NewReader(body))
 		if requestErr != nil {
@@ -173,7 +173,7 @@ func TestHTTPFinancialFlowAgainstPostgreSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	betaExternalID := "http-beta-external-" + uuid.New().String()
-	betaBody := `{"externalId":"` + betaExternalID + `","walletId":"` + betaWalletID.String() + `","playerId":"` + otherPlayerID + `","gameId":"game-beta","roundId":"round-beta","type":"BET","amount":{"amount":"1.00","currency":"BRL"}}`
+	betaBody := `{"providerId":"` + otherProviderID + `","externalTransactionId":"` + betaExternalID + `","walletId":"` + betaWalletID.String() + `","playerId":"` + otherPlayerID + `","gameId":"game-beta","roundId":"round-beta","kind":"BET","money":{"amount":"1.00","currency":"BRL"}}`
 	betaResult, betaResponse := postTransactionAs("other-provider-token", betaBody, "http-beta-key-"+uuid.New().String())
 	if betaResponse.StatusCode != http.StatusOK || betaResult.State != string(wager.Processed) {
 		t.Fatalf("beta transaction response = %d %+v", betaResponse.StatusCode, betaResult)
@@ -227,6 +227,142 @@ func TestHTTPFinancialFlowAgainstPostgreSQL(t *testing.T) {
 	readyResponse.Body.Close()
 }
 
+func TestHTTPReconciliationAgainstPostgreSQLIsReadOnly(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	db, err := postgres.NewRepository(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	providerID := "http-reconciliation-provider-" + uuid.New().String()
+	playerID := "http-reconciliation-player-" + uuid.New().String()
+	auth := &fakeAuthenticator{identities: map[string]keycloak.Identity{
+		"provider-token": testIdentity(providerID, keycloak.RoleProvider),
+		"internal-token": testIdentity("wallet-admin", keycloak.RoleInternal),
+	}}
+	service := financial.NewService(db)
+	queries := query.NewService(db)
+	server := httptest.NewServer(testRouter(auth, service, queries, postgres.NewPostgresChecker(db)))
+	defer server.Close()
+
+	openBody := `{"playerId":"` + playerID + `","initialBalance":{"amount":"100.00","currency":"BRL"}}`
+	openRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/wallets", strings.NewReader(openBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	openRequest.Header.Set("Authorization", "Bearer internal-token")
+	openResponse, err := server.Client().Do(openRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	openPayload, err := readResponse(openResponse, &walletResponse{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wallet := openPayload.(walletResponse)
+	walletID, err := uuid.Parse(wallet.WalletID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	externalID := "http-reconciliation-bet-" + uuid.New().String()
+	transactionBody := `{"providerId":"` + providerID + `","externalTransactionId":"` + externalID + `","walletId":"` + wallet.WalletID + `","playerId":"` + playerID + `","gameId":"game-reconciliation","roundId":"round-reconciliation","kind":"BET","money":{"amount":"25.00","currency":"BRL"}}`
+	transactionRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/wagering/transactions", strings.NewReader(transactionBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactionRequest.Header.Set("Authorization", "Bearer provider-token")
+	transactionRequest.Header.Set("Idempotency-Key", "http-reconciliation-key-"+uuid.New().String())
+	transactionResponse, err := server.Client().Do(transactionRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var transactionResult wageringResultResponse
+	if err := json.NewDecoder(transactionResponse.Body).Decode(&transactionResult); err != nil {
+		transactionResponse.Body.Close()
+		t.Fatal(err)
+	}
+	transactionResponse.Body.Close()
+	if transactionResponse.StatusCode != http.StatusOK || transactionResult.State != string(wager.Processed) {
+		t.Fatalf("transaction response = %d %+v", transactionResponse.StatusCode, transactionResult)
+	}
+
+	walletRepository := postgres.NewWalletRepository(db)
+	ledgerRepository := postgres.NewLedgerRepository(db)
+	walletBefore, err := walletRepository.Find(ctx, walletID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledgerCountBefore, err := ledgerRepository.Count(ctx, walletID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledgerBefore, err := queries.Ledger(ctx, walletID, "", "100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconstructedBefore, err := ledgerRepository.Reconstruct(ctx, walletID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reconciliationRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/wallets/"+wallet.WalletID+"/reconciliation", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reconciliationRequest.Header.Set("Authorization", "Bearer internal-token")
+	reconciliationResponseHTTP, err := server.Client().Do(reconciliationRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reconciliation reconciliationResponse
+	if err := json.NewDecoder(reconciliationResponseHTTP.Body).Decode(&reconciliation); err != nil {
+		reconciliationResponseHTTP.Body.Close()
+		t.Fatal(err)
+	}
+	reconciliationResponseHTTP.Body.Close()
+	if reconciliationResponseHTTP.StatusCode != http.StatusOK {
+		t.Fatalf("reconciliation response = %d %+v", reconciliationResponseHTTP.StatusCode, reconciliation)
+	}
+	if reconciliation.WalletID != wallet.WalletID || reconciliation.CalculatedBalance == nil || reconciliation.Difference == nil {
+		t.Fatalf("reconciliation identity/balances = %+v", reconciliation)
+	}
+	if reconciliation.StoredBalance.Minor() != 7500 || reconciliation.CalculatedBalance.Minor() != 7500 || reconciliation.Difference.Minor() != 0 || !reconciliation.Consistent || reconciliation.CheckedEntries != 2 {
+		t.Fatalf("reconciliation values = %+v, want stored/calculated=7500, difference=0, consistent=true, entries=2", reconciliation)
+	}
+	if reconstructedBefore != 7500 || ledgerCountBefore != 2 || len(ledgerBefore.Entries) != 2 {
+		t.Fatalf("pre-reconciliation ledger = reconstructed %d, count %d, entries %d", reconstructedBefore, ledgerCountBefore, len(ledgerBefore.Entries))
+	}
+
+	walletAfter, err := walletRepository.Find(ctx, walletID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledgerCountAfter, err := ledgerRepository.Count(ctx, walletID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledgerAfter, err := queries.Ledger(ctx, walletID, "", "100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if walletAfter.Balance != walletBefore.Balance || walletAfter.Version != walletBefore.Version || ledgerCountAfter != ledgerCountBefore || len(ledgerAfter.Entries) != len(ledgerBefore.Entries) {
+		t.Fatalf("reconciliation mutated persisted state: before wallet=%+v/count=%d/entries=%d, after wallet=%+v/count=%d/entries=%d", walletBefore, ledgerCountBefore, len(ledgerBefore.Entries), walletAfter, ledgerCountAfter, len(ledgerAfter.Entries))
+	}
+	for index := range ledgerBefore.Entries {
+		if ledgerBefore.Entries[index].ID != ledgerAfter.Entries[index].ID || ledgerBefore.Entries[index].TransactionID != ledgerAfter.Entries[index].TransactionID || ledgerBefore.Entries[index].ValueMinor != ledgerAfter.Entries[index].ValueMinor || ledgerBefore.Entries[index].BalanceAfterMinor != ledgerAfter.Entries[index].BalanceAfterMinor {
+			t.Fatalf("ledger entry %d changed across reconciliation: before=%+v after=%+v", index, ledgerBefore.Entries[index], ledgerAfter.Entries[index])
+		}
+	}
+}
+
 func TestHTTPRejectsZeroAmountWithFinancialValidationEnvelope(t *testing.T) {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -261,7 +397,7 @@ func TestHTTPRejectsZeroAmountWithFinancialValidationEnvelope(t *testing.T) {
 	defer server.Close()
 
 	for _, operationType := range []string{"BET", "WIN"} {
-		body := `{"externalId":"zero-` + strings.ToLower(operationType) + `-` + uuid.New().String() + `","walletId":"` + walletID.String() + `","playerId":"` + playerID + `","gameId":"game-zero","roundId":"round-zero","type":"` + operationType + `","amount":{"amount":"0.00","currency":"BRL"}}`
+		body := `{"providerId":"` + providerID + `","externalTransactionId":"zero-` + strings.ToLower(operationType) + `-` + uuid.New().String() + `","walletId":"` + walletID.String() + `","playerId":"` + playerID + `","gameId":"game-zero","roundId":"round-zero","kind":"` + operationType + `","money":{"amount":"0.00","currency":"BRL"}}`
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/wagering/transactions", strings.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
@@ -314,9 +450,9 @@ func TestHTTPReplayStatesConflictsConcurrencyAndNewService(t *testing.T) {
 		return httptest.NewServer(testRouter(auth, financial.NewService(db), query.NewService(db)))
 	}
 	post := func(server *httptest.Server, operationType, externalID, amount, key, reference string) (wageringResultResponse, int, string, error) {
-		body := `{"externalId":"` + externalID + `","walletId":"` + walletID.String() + `","playerId":"` + playerID + `","gameId":"game-replay","roundId":"round-replay","type":"` + operationType + `","amount":{"amount":"` + amount + `","currency":"BRL"}`
+		body := `{"providerId":"` + providerID + `","externalTransactionId":"` + externalID + `","walletId":"` + walletID.String() + `","playerId":"` + playerID + `","gameId":"game-replay","roundId":"round-replay","kind":"` + operationType + `","money":{"amount":"` + amount + `","currency":"BRL"}`
 		if reference != "" {
-			body += `,"referenceExternalId":"` + reference + `"`
+			body += `,"referenceExternalTransactionId":"` + reference + `"`
 		}
 		body += `}`
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/wagering/transactions", strings.NewReader(body))
@@ -446,7 +582,7 @@ func TestHTTPReplayStatesConflictsConcurrencyAndNewService(t *testing.T) {
 	concurrentExternal := "http-replay-concurrent-" + uuid.New().String()
 	concurrentKey := "http-replay-concurrent-key-" + uuid.New().String()
 	concurrentPost := func() (wageringResultResponse, int, error) {
-		body := `{"externalId":"` + concurrentExternal + `","walletId":"` + concurrentWalletID.String() + `","playerId":"` + concurrentPlayerID + `","gameId":"game-concurrent","roundId":"round-concurrent","type":"BET","amount":{"amount":"80.00","currency":"BRL"}}`
+		body := `{"providerId":"` + providerID + `","externalTransactionId":"` + concurrentExternal + `","walletId":"` + concurrentWalletID.String() + `","playerId":"` + concurrentPlayerID + `","gameId":"game-concurrent","roundId":"round-concurrent","kind":"BET","money":{"amount":"80.00","currency":"BRL"}}`
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/wagering/transactions", strings.NewReader(body))
 		if err != nil {
 			return wageringResultResponse{}, 0, err

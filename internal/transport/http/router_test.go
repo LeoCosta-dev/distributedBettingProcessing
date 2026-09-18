@@ -68,6 +68,7 @@ func (f *fakeFinancial) Reconcile(ctx context.Context, walletID uuid.UUID) (fina
 type fakeQueries struct {
 	wallet              func(context.Context, uuid.UUID) (query.WalletView, error)
 	ledger              func(context.Context, uuid.UUID, string, string) (query.LedgerPage, error)
+	ledgerEntryCount    func(context.Context, uuid.UUID) (int64, error)
 	transaction         func(context.Context, string, uuid.UUID) (query.TransactionView, error)
 	externalTransaction func(context.Context, string, string) (query.TransactionView, error)
 }
@@ -84,6 +85,13 @@ func (f *fakeQueries) Ledger(ctx context.Context, walletID uuid.UUID, cursor, li
 		return query.LedgerPage{}, nil
 	}
 	return f.ledger(ctx, walletID, cursor, limit)
+}
+
+func (f *fakeQueries) LedgerEntryCount(ctx context.Context, walletID uuid.UUID) (int64, error) {
+	if f.ledgerEntryCount == nil {
+		return 0, nil
+	}
+	return f.ledgerEntryCount(ctx, walletID)
 }
 
 func (f *fakeQueries) TransactionForProvider(ctx context.Context, providerID string, transactionID uuid.UUID) (query.TransactionView, error) {
@@ -222,7 +230,7 @@ func TestProcessTransactionTranslatesAuthenticatedIdentityAndReplay(t *testing.T
 		"provider-token": testIdentity("provider-alpha", keycloak.RoleProvider),
 	}}
 	handler := testRouter(auth, financialService, &fakeQueries{})
-	body := `{"externalId":"external-1","walletId":"00000000-0000-0000-0000-000000000001","playerId":"player-1","gameId":"game-1","roundId":"round-1","type":"BET","amount":{"amount":"25.08","currency":"BRL"}}`
+	body := `{"providerId":"provider-alpha","externalTransactionId":"external-1","walletId":"00000000-0000-0000-0000-000000000001","playerId":"player-1","gameId":"game-1","roundId":"round-1","kind":"BET","money":{"amount":"25.08","currency":"BRL"}}`
 	request := httptest.NewRequest(http.MethodPost, "/wagering/transactions", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer provider-token")
 	request.Header.Set("Idempotency-Key", "idem-1")
@@ -241,21 +249,21 @@ func TestProcessTransactionTranslatesAuthenticatedIdentityAndReplay(t *testing.T
 		t.Fatalf("response = %s", response.Body.String())
 	}
 
-	t.Run("providerId body field is not accepted", func(t *testing.T) {
+	t.Run("providerId body field must match authenticated identity", func(t *testing.T) {
 		before := captured
-		request := httptest.NewRequest(http.MethodPost, "/wagering/transactions", strings.NewReader(`{"providerId":"provider-beta"}`))
+		request := httptest.NewRequest(http.MethodPost, "/wagering/transactions", strings.NewReader(`{"providerId":"provider-beta","externalTransactionId":"external-2","walletId":"00000000-0000-0000-0000-000000000001","playerId":"player-1","gameId":"game-1","roundId":"round-1","kind":"BET","money":{"amount":"25.00","currency":"BRL"}}`))
 		request.Header.Set("Authorization", "Bearer provider-token")
 		request.Header.Set("Idempotency-Key", "idem-2")
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
-		if response.Code != http.StatusBadRequest || captured.ID != before.ID {
+		if response.Code != http.StatusForbidden || captured.ID != before.ID {
 			t.Fatalf("response = %d %s, captured changed = %v", response.Code, response.Body.String(), captured.ID != before.ID)
 		}
 	})
 
 	t.Run("opening is not an external operation", func(t *testing.T) {
 		before := captured
-		openingBody := `{"externalId":"external-opening","walletId":"00000000-0000-0000-0000-000000000001","playerId":"player-1","gameId":"game-1","roundId":"round-1","type":"OPENING","amount":{"amount":"25.00","currency":"BRL"}}`
+		openingBody := `{"providerId":"provider-alpha","externalTransactionId":"external-opening","walletId":"00000000-0000-0000-0000-000000000001","playerId":"player-1","gameId":"game-1","roundId":"round-1","kind":"OPENING","money":{"amount":"25.00","currency":"BRL"}}`
 		request := httptest.NewRequest(http.MethodPost, "/wagering/transactions", strings.NewReader(openingBody))
 		request.Header.Set("Authorization", "Bearer provider-token")
 		request.Header.Set("Idempotency-Key", "idem-opening")
@@ -265,6 +273,63 @@ func TestProcessTransactionTranslatesAuthenticatedIdentityAndReplay(t *testing.T
 			t.Fatalf("response = %d %s, captured changed = %v", response.Code, response.Body.String(), captured.ID != before.ID)
 		}
 	})
+
+	t.Run("legacy aliases are not accepted", func(t *testing.T) {
+		request := httptest.NewRequest(http.MethodPost, "/wagering/transactions", strings.NewReader(`{"externalId":"external-legacy","walletId":"00000000-0000-0000-0000-000000000001","playerId":"player-1","gameId":"game-1","roundId":"round-1","type":"BET","amount":{"amount":"25.00","currency":"BRL"}}`))
+		request.Header.Set("Authorization", "Bearer provider-token")
+		request.Header.Set("Idempotency-Key", "idem-legacy")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+		}
+	})
+}
+
+func TestReconciliationResponseUsesNormativeFields(t *testing.T) {
+	walletID := uuid.New()
+	financialService := &fakeFinancial{
+		recon: func(_ context.Context, id uuid.UUID) (financial.Reconciliation, error) {
+			if id != walletID {
+				return financial.Reconciliation{}, errors.New("unexpected wallet")
+			}
+			return financial.Reconciliation{WalletBalance: 10000, LedgerBalance: 7500, Consistent: false}, nil
+		},
+	}
+	queries := &fakeQueries{
+		wallet: func(_ context.Context, id uuid.UUID) (query.WalletView, error) {
+			return query.WalletView{ID: id, Currency: "BRL", BalanceMinor: 10000}, nil
+		},
+		ledgerEntryCount: func(_ context.Context, id uuid.UUID) (int64, error) {
+			if id != walletID {
+				return 0, errors.New("unexpected wallet")
+			}
+			return 3, nil
+		},
+	}
+	auth := &fakeAuthenticator{identities: map[string]keycloak.Identity{
+		"internal-token": testIdentity("wallet-admin", keycloak.RoleInternal),
+	}}
+	handler := testRouter(auth, financialService, queries)
+	request := httptest.NewRequest(http.MethodPost, "/wallets/"+walletID.String()+"/reconciliation", nil)
+	request.Header.Set("Authorization", "Bearer internal-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"walletId", "storedBalance", "calculatedBalance", "difference", "consistent", "checkedEntries"} {
+		if !strings.Contains(string(body), `"`+field+`"`) {
+			t.Fatalf("response missing %s: %s", field, body)
+		}
+	}
+	if strings.Contains(string(body), "walletBalance") || strings.Contains(string(body), "ledgerBalance") {
+		t.Fatalf("response contains legacy reconciliation fields: %s", body)
+	}
 }
 
 func TestProcessTransactionRejectsInvalidTransportInputBeforeUseCase(t *testing.T) {
@@ -279,7 +344,7 @@ func TestProcessTransactionRejectsInvalidTransportInputBeforeUseCase(t *testing.
 		"provider-token": testIdentity("provider-alpha", keycloak.RoleProvider),
 	}}
 	handler := testRouter(auth, financialService, &fakeQueries{})
-	validBody := `{"externalId":"external-1","walletId":"00000000-0000-0000-0000-000000000001","playerId":"player-1","gameId":"game-1","roundId":"round-1","type":"BET","amount":{"amount":"25.00","currency":"BRL"}}`
+	validBody := `{"providerId":"provider-alpha","externalTransactionId":"external-1","walletId":"00000000-0000-0000-0000-000000000001","playerId":"player-1","gameId":"game-1","roundId":"round-1","kind":"BET","money":{"amount":"25.00","currency":"BRL"}}`
 	tests := []struct {
 		name  string
 		body  string

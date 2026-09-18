@@ -43,7 +43,16 @@ func (r *Router) processTransaction(w http.ResponseWriter, request *http.Request
 		r.writeError(w, request, err)
 		return
 	}
-	externalID, err := required("externalId", body.ExternalID)
+	claimedProviderID, err := required("providerId", body.ProviderID)
+	if err != nil {
+		r.writeError(w, request, err)
+		return
+	}
+	if claimedProviderID != providerID {
+		r.writeError(w, request, errForbidden)
+		return
+	}
+	externalID, err := required("externalTransactionId", body.ExternalID)
 	if err != nil {
 		r.writeError(w, request, err)
 		return
@@ -68,7 +77,7 @@ func (r *Router) processTransaction(w http.ResponseWriter, request *http.Request
 		r.writeError(w, request, err)
 		return
 	}
-	amount, err := body.Amount.toMoney("amount")
+	amount, err := body.Amount.toMoney("money")
 	if err != nil {
 		r.writeError(w, request, err)
 		return

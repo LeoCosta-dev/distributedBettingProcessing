@@ -26,6 +26,7 @@ type FinancialUseCases interface {
 type QueryUseCases interface {
 	Wallet(ctx context.Context, walletID uuid.UUID) (query.WalletView, error)
 	Ledger(ctx context.Context, walletID uuid.UUID, cursor, limit string) (query.LedgerPage, error)
+	LedgerEntryCount(ctx context.Context, walletID uuid.UUID) (int64, error)
 	TransactionForProvider(ctx context.Context, providerID string, transactionID uuid.UUID) (query.TransactionView, error)
 	TransactionByExternalForProvider(ctx context.Context, providerID, externalID string) (query.TransactionView, error)
 }
