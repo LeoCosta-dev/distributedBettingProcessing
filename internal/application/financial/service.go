@@ -25,6 +25,17 @@ var (
 	ErrInboxPayloadMismatch = errors.New("inbox payload hash mismatch")
 )
 
+const (
+	FailureCodeInsufficientBalance         = "INSUFFICIENT_BALANCE"
+	FailureCodeReversalInsufficientBalance = "REVERSAL_INSUFFICIENT_BALANCE"
+	FailureCodePlayerWalletMismatch        = "PLAYER_WALLET_MISMATCH"
+	FailureCodeReferenceRequired           = "REFERENCE_REQUIRED"
+	FailureCodeReferenceInvalid            = "REFERENCE_INVALID"
+	FailureCodeReferenceNotFound           = "REFERENCE_NOT_FOUND"
+	FailureCodeReferenceNotResolved        = "REFERENCE_NOT_RESOLVED"
+	FailureCodeReferenceNotSuccessful      = "REFERENCE_NOT_SUCCESSFUL"
+)
+
 const legacyIdentity = "legacy"
 
 type Command struct {
@@ -40,6 +51,7 @@ type Result struct {
 	State         wager.State
 	Balance       int64
 	Amount        money.Money
+	FailureCode   string
 }
 
 type Reconciliation struct {
@@ -54,6 +66,7 @@ type eventPayload struct {
 	State         wager.State `json:"state"`
 	Amount        money.Money `json:"amount"`
 	Balance       int64       `json:"balance"`
+	FailureCode   string      `json:"failureCode,omitempty"`
 }
 
 type Service struct{ db *postgres.Repository }
@@ -200,6 +213,9 @@ func prepareCommand(cmd Command) (Command, error) {
 func (s *Service) processInTx(ctx context.Context, tx *postgres.Repository, cmd Command, now time.Time) (Result, error) {
 	var result Result
 	tr := postgres.NewWagerTransactionRepository(tx)
+	if err := tr.LockReferenceIdentity(ctx, cmd.ProviderID, cmd.ExternalID); err != nil {
+		return result, err
+	}
 	existing, found, err := findExistingTransaction(ctx, tr, cmd)
 	if err != nil {
 		return result, err
@@ -230,13 +246,13 @@ func (s *Service) processInTx(ctx context.Context, tx *postgres.Repository, cmd 
 		return result, err
 	}
 	if cmd.PlayerID != w.PlayerID {
-		err := persistRejected(ctx, tx, cmd, w, now, txDomain, &result)
+		err := persistRejected(ctx, tx, cmd, w, now, txDomain, &result, FailureCodePlayerWalletMismatch)
 		return result, err
 	}
 	var reference *postgres.WagerTransactionRecord
 	if cmd.Type == wager.Refund || cmd.Type == wager.Rollback {
 		if cmd.ReferenceExternalID == "" {
-			err := persistPendingReference(ctx, tx, cmd, w, now, txDomain, &result)
+			err := persistRejected(ctx, tx, cmd, w, now, txDomain, &result, FailureCodeReferenceRequired)
 			return result, err
 		}
 		foundReference, findErr := tr.FindByExternal(ctx, cmd.ProviderID, cmd.ReferenceExternalID)
@@ -247,19 +263,23 @@ func (s *Service) processInTx(ctx context.Context, tx *postgres.Repository, cmd 
 			return result, findErr
 		}
 		if !validReference(cmd, foundReference) {
-			err := persistRejected(ctx, tx, cmd, w, now, txDomain, &result)
+			err := persistRejected(ctx, tx, cmd, w, now, txDomain, &result, FailureCodeReferenceInvalid)
 			return result, err
 		}
 		reference = &foundReference
 	}
 
+	return s.applyOperationInTx(ctx, tx, cmd, w, txDomain, reference, nil, now)
+}
+
+func (s *Service) applyOperationInTx(ctx context.Context, tx *postgres.Repository, cmd Command, w postgres.WalletRecord, txDomain wager.Transaction, reference *postgres.WagerTransactionRecord, existing *postgres.WagerTransactionRecord, now time.Time) (Result, error) {
 	before := w.Balance
 	after := before
 	movement := cmd.Amount.Minor()
 	direction := ledger.Debit
 	domainWallet, err := walletFromRecord(w)
 	if err != nil {
-		return result, err
+		return Result{}, err
 	}
 	var operationErr error
 	switch cmd.Type {
@@ -268,6 +288,9 @@ func (s *Service) processInTx(ctx context.Context, tx *postgres.Repository, cmd 
 	case wager.Win, wager.Refund:
 		direction, operationErr = ledger.Credit, domainWallet.Credit(cmd.Amount)
 	case wager.Rollback:
+		if reference == nil {
+			return Result{}, ErrReferenceInvalid
+		}
 		if reference.Type == string(wager.Bet) {
 			direction, operationErr = ledger.Credit, domainWallet.Credit(cmd.Amount)
 		} else {
@@ -276,23 +299,43 @@ func (s *Service) processInTx(ctx context.Context, tx *postgres.Repository, cmd 
 	case wager.Loss:
 		movement = 0
 	default:
-		return result, ErrReferenceInvalid
+		return Result{}, ErrReferenceInvalid
 	}
 	state := wager.Processed
+	failureCode := ""
 	if operationErr != nil {
 		state = wager.Rejected
+		if cmd.Type == wager.Bet {
+			failureCode = FailureCodeInsufficientBalance
+		} else {
+			failureCode = FailureCodeReversalInsufficientBalance
+		}
 	} else if movement > 0 {
 		after = domainWallet.Balance().Minor()
 	}
 	if err := txDomain.Transition(state); err != nil {
-		return result, err
+		return Result{}, err
 	}
-	result = Result{TransactionID: cmd.ID, State: state, Balance: after, Amount: cmd.Amount}
-	if err := insertTransaction(ctx, tx, cmd, result, now); err != nil {
-		return result, err
+	result := Result{TransactionID: cmd.ID, State: state, Balance: after, Amount: cmd.Amount, FailureCode: failureCode}
+	if existing == nil {
+		if err := insertTransaction(ctx, tx, cmd, result, now); err != nil {
+			return result, err
+		}
+	} else {
+		existing.State = string(state)
+		existing.Result, err = marshalResult(result)
+		if err != nil {
+			return result, err
+		}
+		existing.ReferenceNextAttemptAt = nil
+		existing.FailureCode = failureCode
+		existing.UpdatedAt = now
+		if err := postgres.NewWagerTransactionRepository(tx).UpdatePendingReference(ctx, *existing); err != nil {
+			return result, err
+		}
 	}
 	if state == wager.Processed && movement > 0 {
-		if err := wr.UpdateBalance(ctx, cmd.WalletID, after, w.Version+1, now); err != nil {
+		if err := postgres.NewWalletRepository(tx).UpdateBalance(ctx, cmd.WalletID, after, w.Version+1, now); err != nil {
 			return result, err
 		}
 		value, err := moneyFromMinor(movement, cmd.Amount.Currency())
@@ -335,6 +378,153 @@ func (s *Service) Reconcile(ctx context.Context, walletID uuid.UUID) (Reconcilia
 		return Reconciliation{}, err
 	}
 	return Reconciliation{WalletBalance: w.Balance, LedgerBalance: ledgerBalance, Consistent: w.Balance == ledgerBalance}, nil
+}
+
+// ProcessPendingReference claims one due pending reversal and resolves it in a
+// single PostgreSQL transaction. The row lock and SKIP LOCKED query make the
+// worker safe to run in multiple application instances.
+func (s *Service) ProcessPendingReference(ctx context.Context, now time.Time, maxAttempts int, backoff time.Duration) (bool, error) {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	processed := false
+	err := s.db.WithTx(ctx, func(ctx context.Context, tx *postgres.Repository) error {
+		repository := postgres.NewWagerTransactionRepository(tx)
+		record, err := repository.FindNextPendingReferenceForUpdate(ctx, now)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		processed = true
+		return s.processPendingReferenceInTx(ctx, tx, record, now, maxAttempts, backoff)
+	})
+	return processed, err
+}
+
+func (s *Service) processPendingReferenceInTx(ctx context.Context, tx *postgres.Repository, record postgres.WagerTransactionRecord, now time.Time, maxAttempts int, backoff time.Duration) error {
+	command, err := commandFromRecord(record)
+	if err != nil {
+		return err
+	}
+	repository := postgres.NewWagerTransactionRepository(tx)
+	if err := repository.LockReferenceIdentity(ctx, record.ProviderID, record.ReferenceExternalID); err != nil {
+		return err
+	}
+	reference, err := repository.FindByExternal(ctx, record.ProviderID, record.ReferenceExternalID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return s.advancePendingReferenceInTx(ctx, tx, record, now, maxAttempts, backoff, FailureCodeReferenceNotFound)
+	}
+	if err != nil {
+		return err
+	}
+	if reference.State != string(wager.Processed) {
+		if reference.State == string(wager.Pending) || reference.State == string(wager.PendingReference) {
+			return s.advancePendingReferenceInTx(ctx, tx, record, now, maxAttempts, backoff, FailureCodeReferenceNotResolved)
+		}
+		return s.rejectPendingReferenceInTx(ctx, tx, record, command, now, FailureCodeReferenceNotSuccessful)
+	}
+	if !validReference(command, reference) {
+		return s.rejectPendingReferenceInTx(ctx, tx, record, command, now, FailureCodeReferenceInvalid)
+	}
+	walletRecord, err := postgres.NewWalletRepository(tx).FindForUpdate(ctx, command.WalletID)
+	if err != nil {
+		return err
+	}
+	txDomain, err := wager.New(command.ID.String(), command.ExternalID, command.ProviderID, command.WalletID.String(), command.Type, command.Amount)
+	if err != nil {
+		return err
+	}
+	if err := txDomain.Transition(wager.PendingReference); err != nil {
+		return err
+	}
+	_, err = s.applyOperationInTx(ctx, tx, command, walletRecord, txDomain, &reference, &record, now)
+	return err
+}
+
+func (s *Service) advancePendingReferenceInTx(ctx context.Context, tx *postgres.Repository, record postgres.WagerTransactionRecord, now time.Time, maxAttempts int, backoff time.Duration, exhaustionCode string) error {
+	record.ReferenceAttempts++
+	if record.ReferenceAttempts >= maxAttempts {
+		command, err := commandFromRecord(record)
+		if err != nil {
+			return err
+		}
+		return s.rejectPendingReferenceInTx(ctx, tx, record, command, now, exhaustionCode)
+	}
+	record.ReferenceNextAttemptAt = nextReferenceAttempt(now, backoff, record.ReferenceAttempts)
+	record.UpdatedAt = now
+	return postgres.NewWagerTransactionRepository(tx).UpdatePendingReference(ctx, record)
+}
+
+func (s *Service) rejectPendingReferenceInTx(ctx context.Context, tx *postgres.Repository, record postgres.WagerTransactionRecord, command Command, now time.Time, failureCode string) error {
+	walletRecord, err := postgres.NewWalletRepository(tx).FindForUpdate(ctx, command.WalletID)
+	if err != nil {
+		return err
+	}
+	txDomain, err := wager.New(command.ID.String(), command.ExternalID, command.ProviderID, command.WalletID.String(), command.Type, command.Amount)
+	if err != nil {
+		return err
+	}
+	if err := txDomain.Transition(wager.PendingReference); err != nil {
+		return err
+	}
+	if err := txDomain.Transition(wager.Rejected); err != nil {
+		return err
+	}
+	result := Result{TransactionID: command.ID, State: wager.Rejected, Balance: walletRecord.Balance, Amount: command.Amount, FailureCode: failureCode}
+	record.State = string(result.State)
+	record.Result, err = marshalResult(result)
+	if err != nil {
+		return err
+	}
+	record.ReferenceNextAttemptAt = nil
+	record.FailureCode = failureCode
+	record.UpdatedAt = now
+	if err := postgres.NewWagerTransactionRepository(tx).UpdatePendingReference(ctx, record); err != nil {
+		return err
+	}
+	return insertEvent(ctx, tx, "WagerTransactionRejected", command.Type, command.ID, command.WalletID, result, walletRecord.Version, now, command.IdempotencyKey)
+}
+
+func commandFromRecord(record postgres.WagerTransactionRecord) (Command, error) {
+	amount, err := moneyFromMinor(record.Amount, record.Currency)
+	if err != nil {
+		return Command{}, err
+	}
+	return Command{
+		ID:                  record.ID,
+		WalletID:            record.WalletID,
+		ExternalID:          record.ExternalID,
+		ProviderID:          record.ProviderID,
+		PlayerID:            record.PlayerID,
+		GameID:              record.GameID,
+		RoundID:             record.RoundID,
+		IdempotencyKey:      record.IdempotencyKey,
+		PayloadHash:         record.PayloadHash,
+		ReferenceExternalID: record.ReferenceExternalID,
+		Type:                wager.Type(record.Type),
+		Amount:              amount,
+	}, nil
+}
+
+func nextReferenceAttempt(now time.Time, base time.Duration, attempt int) *time.Time {
+	if base <= 0 {
+		return &now
+	}
+	shift := attempt - 1
+	if shift < 0 {
+		shift = 0
+	}
+	if shift > 30 {
+		shift = 30
+	}
+	delay := base * time.Duration(uint64(1)<<shift)
+	if delay < 0 {
+		delay = 24 * time.Hour
+	}
+	next := now.Add(delay)
+	return &next
 }
 
 func validateCommand(cmd Command) error {
@@ -459,11 +649,11 @@ func persistPendingReference(ctx context.Context, tx *postgres.Repository, cmd C
 	return insertEvent(ctx, tx, "WagerTransactionPendingReference", cmd.Type, cmd.ID, cmd.WalletID, result, int64(w.Version), now, cmd.IdempotencyKey)
 }
 
-func persistRejected(ctx context.Context, tx *postgres.Repository, cmd Command, w postgres.WalletRecord, now time.Time, txDomain wager.Transaction, output *Result) error {
+func persistRejected(ctx context.Context, tx *postgres.Repository, cmd Command, w postgres.WalletRecord, now time.Time, txDomain wager.Transaction, output *Result, failureCode string) error {
 	if err := txDomain.Transition(wager.Rejected); err != nil {
 		return err
 	}
-	result := Result{TransactionID: cmd.ID, State: wager.Rejected, Balance: w.Balance, Amount: cmd.Amount}
+	result := Result{TransactionID: cmd.ID, State: wager.Rejected, Balance: w.Balance, Amount: cmd.Amount, FailureCode: failureCode}
 	if err := insertTransaction(ctx, tx, cmd, result, now); err != nil {
 		return err
 	}
@@ -480,8 +670,15 @@ func insertTransaction(ctx context.Context, tx *postgres.Repository, cmd Command
 		ID: cmd.ID, ExternalID: cmd.ExternalID, ProviderID: cmd.ProviderID, WalletID: cmd.WalletID,
 		PlayerID: cmd.PlayerID, GameID: cmd.GameID, RoundID: cmd.RoundID, Type: string(cmd.Type), Amount: cmd.Amount.Minor(),
 		Currency: cmd.Amount.Currency(), State: string(result.State), IdempotencyKey: cmd.IdempotencyKey,
-		PayloadHash: cmd.PayloadHash, Result: resultData, ReferenceExternalID: cmd.ReferenceExternalID, CreatedAt: now, UpdatedAt: now,
+		PayloadHash: cmd.PayloadHash, Result: resultData, ReferenceExternalID: cmd.ReferenceExternalID, ReferenceNextAttemptAt: pendingReferenceNextAttempt(result.State, now), FailureCode: result.FailureCode, CreatedAt: now, UpdatedAt: now,
 	})
+}
+
+func pendingReferenceNextAttempt(state wager.State, now time.Time) *time.Time {
+	if state != wager.PendingReference {
+		return nil
+	}
+	return &now
 }
 
 func insertFinancialEvents(ctx context.Context, tx *postgres.Repository, typ wager.Type, walletID uuid.UUID, result Result, version int64, now time.Time, correlation string, balanceChanged bool) error {
@@ -495,7 +692,7 @@ func insertFinancialEvents(ctx context.Context, tx *postgres.Repository, typ wag
 }
 
 func insertEvent(ctx context.Context, tx *postgres.Repository, eventType string, typ wager.Type, aggregateID, walletID uuid.UUID, result Result, version int64, now time.Time, correlation string) error {
-	data, err := json.Marshal(eventPayload{TransactionID: result.TransactionID, WalletID: walletID, Type: typ, State: result.State, Amount: result.Amount, Balance: result.Balance})
+	data, err := json.Marshal(eventPayload{TransactionID: result.TransactionID, WalletID: walletID, Type: typ, State: result.State, Amount: result.Amount, Balance: result.Balance, FailureCode: result.FailureCode})
 	if err != nil {
 		return err
 	}

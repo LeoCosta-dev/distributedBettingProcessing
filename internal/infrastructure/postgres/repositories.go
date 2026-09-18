@@ -25,6 +25,9 @@ type WagerTransactionRecord struct {
 	Type                                                              string
 	Amount                                                            int64
 	Currency, State, IdempotencyKey, PayloadHash, ReferenceExternalID string
+	ReferenceAttempts                                                 int
+	ReferenceNextAttemptAt                                            *time.Time
+	FailureCode                                                       string
 	Result                                                            []byte
 	CreatedAt, UpdatedAt                                              time.Time
 }
@@ -64,7 +67,7 @@ func (r *WalletRepository) UpdateBalance(ctx context.Context, id uuid.UUID, bala
 
 type WagerTransactionRepository struct{ db *Repository }
 
-const wagerTransactionColumns = `id,external_id,provider_id,wallet_id,player_id,game_id,round_id,type,amount,currency,state,idempotency_key,payload_hash,result,reference_external_id,created_at,updated_at`
+const wagerTransactionColumns = `id,external_id,provider_id,wallet_id,player_id,game_id,round_id,type,amount,currency,state,idempotency_key,payload_hash,result,reference_external_id,reference_attempts,reference_next_attempt_at,failure_code,created_at,updated_at`
 
 func NewWagerTransactionRepository(db *Repository) *WagerTransactionRepository {
 	return &WagerTransactionRepository{db: db}
@@ -74,11 +77,19 @@ func (r *WagerTransactionRepository) Insert(ctx context.Context, w WagerTransact
 	if w.ReferenceExternalID == "" {
 		reference = nil
 	}
-	_, err := r.db.exec.Exec(ctx, `INSERT INTO wager_transactions (id,external_id,provider_id,wallet_id,player_id,game_id,round_id,type,amount,currency,state,idempotency_key,payload_hash,result,reference_external_id,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`, w.ID, w.ExternalID, w.ProviderID, w.WalletID, w.PlayerID, w.GameID, w.RoundID, w.Type, w.Amount, w.Currency, w.State, w.IdempotencyKey, w.PayloadHash, w.Result, reference, w.CreatedAt, w.UpdatedAt)
+	_, err := r.db.exec.Exec(ctx, `INSERT INTO wager_transactions (id,external_id,provider_id,wallet_id,player_id,game_id,round_id,type,amount,currency,state,idempotency_key,payload_hash,result,reference_external_id,reference_attempts,reference_next_attempt_at,failure_code,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`, w.ID, w.ExternalID, w.ProviderID, w.WalletID, w.PlayerID, w.GameID, w.RoundID, w.Type, w.Amount, w.Currency, w.State, w.IdempotencyKey, w.PayloadHash, w.Result, reference, w.ReferenceAttempts, w.ReferenceNextAttemptAt, nullableString(w.FailureCode), w.CreatedAt, w.UpdatedAt)
 	return err
 }
 func (r *WagerTransactionRepository) FindByExternal(ctx context.Context, provider, external string) (WagerTransactionRecord, error) {
 	return r.find(ctx, `SELECT `+wagerTransactionColumns+` FROM wager_transactions WHERE provider_id=$1 AND external_id=$2`, provider, external)
+}
+
+// LockReferenceIdentity serializes creation/confirmation of a reference with
+// a pending-reference worker's terminal decision. The lock is transaction
+// scoped and therefore works across independent application instances.
+func (r *WagerTransactionRepository) LockReferenceIdentity(ctx context.Context, provider, external string) error {
+	_, err := r.db.exec.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, provider+"\x1f"+external)
+	return err
 }
 func (r *WagerTransactionRepository) FindByID(ctx context.Context, id uuid.UUID) (WagerTransactionRecord, error) {
 	return r.find(ctx, `SELECT `+wagerTransactionColumns+` FROM wager_transactions WHERE id=$1`, id)
@@ -98,12 +109,24 @@ func (r *WagerTransactionRepository) CountByIdempotency(ctx context.Context, pro
 }
 func (r *WagerTransactionRepository) find(ctx context.Context, query string, args ...any) (WagerTransactionRecord, error) {
 	var w WagerTransactionRecord
-	var reference *string
-	err := r.db.exec.QueryRow(ctx, query, args...).Scan(&w.ID, &w.ExternalID, &w.ProviderID, &w.WalletID, &w.PlayerID, &w.GameID, &w.RoundID, &w.Type, &w.Amount, &w.Currency, &w.State, &w.IdempotencyKey, &w.PayloadHash, &w.Result, &reference, &w.CreatedAt, &w.UpdatedAt)
+	var reference, failureCode *string
+	err := r.db.exec.QueryRow(ctx, query, args...).Scan(&w.ID, &w.ExternalID, &w.ProviderID, &w.WalletID, &w.PlayerID, &w.GameID, &w.RoundID, &w.Type, &w.Amount, &w.Currency, &w.State, &w.IdempotencyKey, &w.PayloadHash, &w.Result, &reference, &w.ReferenceAttempts, &w.ReferenceNextAttemptAt, &failureCode, &w.CreatedAt, &w.UpdatedAt)
 	if reference != nil {
 		w.ReferenceExternalID = *reference
 	}
+	if failureCode != nil {
+		w.FailureCode = *failureCode
+	}
 	return w, err
+}
+
+func (r *WagerTransactionRepository) FindNextPendingReferenceForUpdate(ctx context.Context, now time.Time) (WagerTransactionRecord, error) {
+	return r.find(ctx, `SELECT `+wagerTransactionColumns+` FROM wager_transactions WHERE state='PENDING_REFERENCE' AND (reference_next_attempt_at IS NULL OR reference_next_attempt_at <= $1) ORDER BY reference_next_attempt_at NULLS FIRST, id FOR UPDATE SKIP LOCKED LIMIT 1`, now)
+}
+
+func (r *WagerTransactionRepository) UpdatePendingReference(ctx context.Context, record WagerTransactionRecord) error {
+	_, err := r.db.exec.Exec(ctx, `UPDATE wager_transactions SET state=$2,result=$3,reference_attempts=$4,reference_next_attempt_at=$5,failure_code=$6,updated_at=$7 WHERE id=$1`, record.ID, record.State, record.Result, record.ReferenceAttempts, record.ReferenceNextAttemptAt, nullableString(record.FailureCode), record.UpdatedAt)
+	return err
 }
 
 type LedgerRepository struct{ db *Repository }

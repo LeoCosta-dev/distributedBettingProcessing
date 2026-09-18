@@ -50,6 +50,9 @@ func TestLoadReadsOIDCAndShutdownConfiguration(t *testing.T) {
 	if cfg.AWSRegion != "us-east-1" || cfg.SQSWagerQueue != "wager-transactions.fifo" || cfg.SQSVisibilityTimeoutSeconds() != 30 || cfg.SQSWaitTimeSeconds() != 10 {
 		t.Fatalf("SQS defaults = %+v", cfg)
 	}
+	if cfg.ReferencePollInterval != time.Second || cfg.ReferenceMaxAttempts != 10 || cfg.ReferenceBackoff != time.Second {
+		t.Fatalf("reference worker defaults = %+v", cfg)
+	}
 }
 
 func TestLoadRejectsInvalidConfiguration(t *testing.T) {
@@ -76,6 +79,10 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		{name: "invalid SQS wait time", setup: func(t *testing.T) {
 			setRequiredEnvironment(t)
 			t.Setenv("SQS_WAIT_TIME_SECONDS", "21")
+		}},
+		{name: "invalid reference attempts", setup: func(t *testing.T) {
+			setRequiredEnvironment(t)
+			t.Setenv("REFERENCE_MAX_ATTEMPTS", "0")
 		}},
 	}
 	for _, test := range tests {

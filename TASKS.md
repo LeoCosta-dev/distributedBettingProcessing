@@ -336,23 +336,31 @@ Recover reversals whose referenced transaction arrives later.
 
 ### Tasks
 
-* [ ] PENDING_REFERENCE
-* [ ] reference worker
-* [ ] exponential backoff
-* [ ] retry limit / TTL
-* [ ] reference resolution
-* [ ] reference expiration rejection
-* [ ] restartable exponential backoff
-* [ ] stable reference-not-found failureCode
-* [ ] pending/unsuccessful reference behavior
+* [x] PENDING_REFERENCE
+* [x] reference worker
+* [x] exponential backoff
+* [x] retry limit / TTL
+* [x] reference resolution
+* [x] reference expiration rejection
+* [x] restartable exponential backoff
+* [x] stable reference-not-found failureCode
+* [x] pending/unsuccessful reference behavior
 
 ### Verification
 
-* [ ] reversal before reference
-* [ ] reference arrives later
-* [ ] application restart while pending
-* [ ] retry exhaustion
-* [ ] pending reference event
+* [x] reversal before reference
+* [x] reference arrives later
+* [x] application restart while pending
+* [x] retry exhaustion
+* [x] pending reference event
+* [x] reference-at-exhaustion race with independent PostgreSQL pools
+* [x] multiple pending-reference workers across independent PostgreSQL pools
+
+> Loop 8 uses a ten-attempt default with one-second exponential backoff.
+> `REFERENCE_REQUIRED` rejects an empty reference immediately; a non-empty
+> missing reference becomes `PENDING_REFERENCE`. Pending references survive
+> restart through PostgreSQL. Loop 9 remains responsible for publishing the
+> resulting transactional outbox rows.
 
 ---
 
@@ -516,13 +524,13 @@ Documentation
 # Current Loop
 
 ```text
-Loop 7 — SQS and Inbox
+Loop 8 — Pending References
 ```
 
 # Current Status
 
 ```text
-IMPLEMENTED — CORRECTIONS VERIFIED — PENDING FINAL HUMAN REVIEW
+IMPLEMENTED — PENDING HUMAN REVIEW
 ```
 
 # Rules

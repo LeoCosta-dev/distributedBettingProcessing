@@ -88,13 +88,16 @@ func (r *WagerTransactionQueryRepository) FindByExternalForProvider(ctx context.
 
 func (r *WagerTransactionQueryRepository) find(ctx context.Context, query string, args ...any) (WagerTransactionRecord, error) {
 	var record WagerTransactionRecord
-	var reference *string
-	err := r.db.exec.QueryRow(ctx, query, args...).Scan(&record.ID, &record.ExternalID, &record.ProviderID, &record.WalletID, &record.PlayerID, &record.GameID, &record.RoundID, &record.Type, &record.Amount, &record.Currency, &record.State, &record.IdempotencyKey, &record.PayloadHash, &record.Result, &reference, &record.CreatedAt, &record.UpdatedAt)
+	var reference, failureCode *string
+	err := r.db.exec.QueryRow(ctx, query, args...).Scan(&record.ID, &record.ExternalID, &record.ProviderID, &record.WalletID, &record.PlayerID, &record.GameID, &record.RoundID, &record.Type, &record.Amount, &record.Currency, &record.State, &record.IdempotencyKey, &record.PayloadHash, &record.Result, &reference, &record.ReferenceAttempts, &record.ReferenceNextAttemptAt, &failureCode, &record.CreatedAt, &record.UpdatedAt)
 	if err != nil {
 		return WagerTransactionRecord{}, err
 	}
 	if reference != nil {
 		record.ReferenceExternalID = *reference
+	}
+	if failureCode != nil {
+		record.FailureCode = *failureCode
 	}
 	return record, nil
 }

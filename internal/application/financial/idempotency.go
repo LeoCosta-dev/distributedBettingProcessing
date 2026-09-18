@@ -58,6 +58,7 @@ type persistedResult struct {
 	State         wager.State `json:"state"`
 	Balance       int64       `json:"balance"`
 	Amount        money.Money `json:"amount"`
+	FailureCode   string      `json:"failureCode,omitempty"`
 }
 
 func marshalResult(result Result) ([]byte, error) {
@@ -66,6 +67,7 @@ func marshalResult(result Result) ([]byte, error) {
 		State:         result.State,
 		Balance:       result.Balance,
 		Amount:        result.Amount,
+		FailureCode:   result.FailureCode,
 	})
 }
 
@@ -79,5 +81,6 @@ func unmarshalResult(data []byte) (Result, error) {
 		State:         persisted.State,
 		Balance:       persisted.Balance,
 		Amount:        persisted.Amount,
+		FailureCode:   persisted.FailureCode,
 	}, nil
 }

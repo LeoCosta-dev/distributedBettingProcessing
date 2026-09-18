@@ -101,6 +101,7 @@ type wageringResultResponse struct {
 	State         string       `json:"status"`
 	Amount        money.Money  `json:"amount"`
 	Balance       *money.Money `json:"balance,omitempty"`
+	FailureCode   string       `json:"failureCode,omitempty"`
 	// IdempotentReplay is present only on POST /wagering/transactions, which is
 	// the only endpoint that can resolve an existing idempotency record.
 	IdempotentReplay *bool `json:"idempotentReplay,omitempty"`

@@ -308,6 +308,7 @@ func TestIdempotencyReplaysRejectedAndPendingReference(t *testing.T) {
 
 	pendingCommand := validCommand(walletID, uuid.New(), "idempotency-pending-"+walletID.String(), wager.Refund, moneyMust("1.00", "BRL"))
 	pendingCommand.PlayerID = playerID
+	pendingCommand.ReferenceExternalID = "pending-reference-" + walletID.String()
 	pending, err := service.Process(ctx, pendingCommand, now)
 	if err != nil || pending.State != wager.PendingReference || pending.Balance != 10000 {
 		t.Fatalf("pending operation: %+v %v", pending, err)

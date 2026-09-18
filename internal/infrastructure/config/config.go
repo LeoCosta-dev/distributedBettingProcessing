@@ -15,16 +15,19 @@ import (
 var ErrInvalidConfiguration = errors.New("invalid configuration")
 
 const (
-	defaultHTTPAddr        = ":8080"
-	defaultShutdownTimeout = 10 * time.Second
-	defaultLogLevel        = "info"
-	defaultAWSRegion       = "us-east-1"
-	defaultSQSWagerQueue   = "wager-transactions.fifo"
-	defaultSQSWagerDLQ     = "wager-transactions-dlq.fifo"
-	defaultSQSVisibility   = 30 * time.Second
-	defaultSQSWaitTime     = 10 * time.Second
-	defaultSQSMaxMessages  = 1
-	defaultSQSBackoff      = 5 * time.Second
+	defaultHTTPAddr         = ":8080"
+	defaultShutdownTimeout  = 10 * time.Second
+	defaultLogLevel         = "info"
+	defaultAWSRegion        = "us-east-1"
+	defaultSQSWagerQueue    = "wager-transactions.fifo"
+	defaultSQSWagerDLQ      = "wager-transactions-dlq.fifo"
+	defaultSQSVisibility    = 30 * time.Second
+	defaultSQSWaitTime      = 10 * time.Second
+	defaultSQSMaxMessages   = 1
+	defaultSQSBackoff       = 5 * time.Second
+	defaultReferencePoll    = time.Second
+	defaultReferenceMax     = 10
+	defaultReferenceBackoff = time.Second
 )
 
 // Config holds the transport and dependency configuration of the process.
@@ -49,6 +52,9 @@ type Config struct {
 	SQSWaitTime               time.Duration
 	SQSMaxMessages            int32
 	SQSRetryVisibilityBackoff time.Duration
+	ReferencePollInterval     time.Duration
+	ReferenceMaxAttempts      int
+	ReferenceBackoff          time.Duration
 }
 
 // Load reads and validates the process configuration from the environment.
@@ -76,6 +82,9 @@ func Load() (Config, error) {
 		SQSWaitTime:               defaultSQSWaitTime,
 		SQSMaxMessages:            defaultSQSMaxMessages,
 		SQSRetryVisibilityBackoff: defaultSQSBackoff,
+		ReferencePollInterval:     defaultReferencePoll,
+		ReferenceMaxAttempts:      defaultReferenceMax,
+		ReferenceBackoff:          defaultReferenceBackoff,
 	}
 	if raw := strings.TrimSpace(os.Getenv("HTTP_SHUTDOWN_TIMEOUT")); raw != "" {
 		parsed, err := time.ParseDuration(raw)
@@ -111,6 +120,27 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("%w: SQS_RETRY_VISIBILITY_BACKOFF_SECONDS=%q", ErrInvalidConfiguration, raw)
 		}
 		cfg.SQSRetryVisibilityBackoff = time.Duration(seconds) * time.Second
+	}
+	if raw := strings.TrimSpace(os.Getenv("REFERENCE_POLL_INTERVAL")); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed <= 0 {
+			return Config{}, fmt.Errorf("%w: REFERENCE_POLL_INTERVAL=%q", ErrInvalidConfiguration, raw)
+		}
+		cfg.ReferencePollInterval = parsed
+	}
+	if raw := strings.TrimSpace(os.Getenv("REFERENCE_MAX_ATTEMPTS")); raw != "" {
+		attempts, err := strconv.Atoi(raw)
+		if err != nil || attempts < 1 {
+			return Config{}, fmt.Errorf("%w: REFERENCE_MAX_ATTEMPTS=%q", ErrInvalidConfiguration, raw)
+		}
+		cfg.ReferenceMaxAttempts = attempts
+	}
+	if raw := strings.TrimSpace(os.Getenv("REFERENCE_BACKOFF")); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed < 0 {
+			return Config{}, fmt.Errorf("%w: REFERENCE_BACKOFF=%q", ErrInvalidConfiguration, raw)
+		}
+		cfg.ReferenceBackoff = parsed
 	}
 	for _, required := range []struct {
 		name  string

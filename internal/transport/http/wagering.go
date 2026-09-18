@@ -203,6 +203,7 @@ func resultResponse(result financial.Result, replay *bool) (wageringResultRespon
 		State:            string(result.State),
 		Amount:           amount,
 		Balance:          &balance,
+		FailureCode:      result.FailureCode,
 		IdempotentReplay: replay,
 	}, nil
 }
@@ -220,6 +221,7 @@ func transactionViewResponse(view query.TransactionView) (wageringResultResponse
 		TransactionID: view.ID.String(),
 		State:         string(view.State),
 		Amount:        amount,
+		FailureCode:   view.FailureCode,
 	}
 	if view.BalanceMinor != nil {
 		balance, err := wireMoney(*view.BalanceMinor, view.Currency)

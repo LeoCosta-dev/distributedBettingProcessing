@@ -57,6 +57,7 @@ func Module() fx.Option {
 				fx.ParamTags(`group:"health_checkers"`),
 			),
 			newSQSConsumer,
+			newReferenceWorker,
 			transporthttp.NewRouter,
 			newHTTPServer,
 		),
@@ -106,6 +107,15 @@ func newSQSConsumer(client *sqsinfrastructure.Client, processor messaging.Proces
 	})
 }
 
+func newReferenceWorker(db *postgres.Repository, cfg config.Config, logger *slog.Logger) *financial.ReferenceWorker {
+	return financial.NewReferenceWorker(financial.NewService(db), financial.ReferenceWorkerConfig{
+		PollInterval: cfg.ReferencePollInterval,
+		MaxAttempts:  cfg.ReferenceMaxAttempts,
+		Backoff:      cfg.ReferenceBackoff,
+		Logger:       logger,
+	})
+}
+
 func newHTTPServer(cfg config.Config, router *transporthttp.Router, logger *slog.Logger) *transporthttp.Server {
 	return transporthttp.NewServer(cfg.HTTPAddr, router.Handler(), logger)
 }
@@ -122,8 +132,8 @@ func newHTTPServer(cfg config.Config, router *transporthttp.Router, logger *slog
 //  4. if the budget expires, cancel the remaining work through its context and
 //     close the connections;
 //  5. close the database pool.
-func registerLifecycle(lifecycle fx.Lifecycle, db *postgres.Repository, server *transporthttp.Server, consumer *messaging.Consumer, cfg config.Config, logger *slog.Logger) {
-	appendLifecycleHooks(lifecycle, db, server, cfg, logger, consumer)
+func registerLifecycle(lifecycle fx.Lifecycle, db *postgres.Repository, server *transporthttp.Server, consumer *messaging.Consumer, referenceWorker *financial.ReferenceWorker, cfg config.Config, logger *slog.Logger) {
+	appendLifecycleHooks(lifecycle, db, server, cfg, logger, consumer, referenceWorker)
 }
 
 type lifecycleDatabase interface {

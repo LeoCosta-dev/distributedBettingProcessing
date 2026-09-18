@@ -1093,6 +1093,43 @@ failure/redrive policy. Conditional integration tests are not evidence by
 themselves; real execution is reported separately under the Integration
 Evidence Gate.
 
+## ADR-008 — Loop 8 pending-reference worker
+
+Status: IMPLEMENTED — PENDING HUMAN REVIEW
+Date: 2026-09-18
+
+Decision:
+
+* A reversal whose non-empty reference is not yet present is committed as
+  `PENDING_REFERENCE`. An absent reference field is a terminal rejection with
+  `REFERENCE_REQUIRED`; it is not retryable because no future identity can be
+  resolved.
+* Pending work stores `reference_attempts`, `reference_next_attempt_at` and an
+  optional `failure_code` on the wager transaction. The retry policy defaults
+  to ten attempts with a one-second exponential base backoff and is loaded
+  from `REFERENCE_MAX_ATTEMPTS`, `REFERENCE_BACKOFF` and
+  `REFERENCE_POLL_INTERVAL`.
+* The Fx reference worker claims one due row at a time with PostgreSQL
+  `FOR UPDATE SKIP LOCKED`. Every resolution, terminal rejection, wallet
+  lock, ledger entry, transaction result and event row is committed in the
+  same SQL transaction. The worker owns an explicitly cancellable lifecycle
+  context and reconstructs all state from PostgreSQL after restart.
+* A processed compatible reference resolves the reversal. A pending reference
+  is retried until exhaustion. A terminal unsuccessful reference is rejected
+  with `REFERENCE_NOT_SUCCESSFUL`; an exhausted missing or unresolved
+  reference is rejected with the stable `REFERENCE_NOT_FOUND` or
+  `REFERENCE_NOT_RESOLVED` code. Reference mismatches use `REFERENCE_INVALID`.
+* Pending-reference and rejection events are persisted transactionally. This
+  loop does not publish outbox rows; publication remains Loop 9 scope.
+* Reference identity coordination uses a PostgreSQL transaction-scoped
+  advisory lock derived from `(providerId, externalTransactionId)`. The
+  normal transaction-creation path and the pending worker acquire the same
+  lock. This serializes reference confirmation against a terminal
+  `REFERENCE_NOT_FOUND` decision across independent instances without
+  introducing a global wallet/provider lock. The pending row is claimed before
+  the reference lock; the reference-creation path does not claim pending rows,
+  so the lock order has no cycle.
+
 ---
 
 # 35. Current Status
@@ -1100,7 +1137,7 @@ Evidence Gate.
 Architecture status:
 
 ```text
-LOOP 7 CORRECTIONS VERIFIED — PENDING FINAL HUMAN REVIEW
+LOOP 8 IMPLEMENTED — PENDING HUMAN REVIEW
 ```
 
 Implementation status must not be inferred from this document.

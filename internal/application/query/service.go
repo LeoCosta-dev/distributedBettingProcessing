@@ -85,6 +85,7 @@ type TransactionView struct {
 	AmountMinor         int64
 	Currency            string
 	ReferenceExternalID string
+	FailureCode         string
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 	// BalanceMinor is the balance snapshot persisted with the transaction. It is
@@ -226,6 +227,7 @@ func transactionView(record postgres.WagerTransactionRecord) TransactionView {
 		AmountMinor:         record.Amount,
 		Currency:            record.Currency,
 		ReferenceExternalID: record.ReferenceExternalID,
+		FailureCode:         record.FailureCode,
 		CreatedAt:           record.CreatedAt,
 		UpdatedAt:           record.UpdatedAt,
 	}

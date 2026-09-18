@@ -522,11 +522,11 @@ func TestHTTPReplayStatesConflictsConcurrencyAndNewService(t *testing.T) {
 
 	pendingExternal := "http-replay-pending-" + uuid.New().String()
 	pendingKey := "http-replay-pending-key-" + uuid.New().String()
-	firstPending, status, _, err := post(server, "REFUND", pendingExternal, "1.00", pendingKey, "")
+	firstPending, status, _, err := post(server, "REFUND", pendingExternal, "1.00", pendingKey, "pending-reference-"+pendingExternal)
 	if err != nil || status != http.StatusOK || firstPending.State != string(wager.PendingReference) || firstPending.IdempotentReplay == nil || *firstPending.IdempotentReplay {
 		t.Fatalf("first pending request = %d %+v %v", status, firstPending, err)
 	}
-	replayedPending, status, _, err := post(server, "REFUND", pendingExternal, "1.00", pendingKey, "")
+	replayedPending, status, _, err := post(server, "REFUND", pendingExternal, "1.00", pendingKey, "pending-reference-"+pendingExternal)
 	if err != nil || status != http.StatusOK || replayedPending.TransactionID != firstPending.TransactionID || replayedPending.Balance == nil || firstPending.Balance == nil || replayedPending.Balance.Minor() != firstPending.Balance.Minor() || replayedPending.IdempotentReplay == nil || !*replayedPending.IdempotentReplay {
 		t.Fatalf("pending replay = %d %+v %v", status, replayedPending, err)
 	}
