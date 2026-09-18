@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/application/financial"
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/observability"
 )
 
 const defaultConsumerName = "wager-transaction-consumer"
@@ -35,6 +36,8 @@ type Config struct {
 	MaxMessages            int32
 	RetryVisibilityBackoff time.Duration
 	Logger                 *slog.Logger
+	Metrics                *observability.Metrics
+	MaxReceiveCount        int
 }
 
 type Consumer struct {
@@ -184,17 +187,24 @@ func (c *Consumer) handleMessage(ctx context.Context, queueURL string, message t
 	decoded, err := DecodeMessage(body)
 	if err != nil {
 		c.logMessageError("SQS message rejected by envelope validation", message, err)
+		if c.config.MaxReceiveCount > 0 && attempt >= c.config.MaxReceiveCount && c.config.Metrics != nil {
+			c.config.Metrics.ObserveRedriveCandidate()
+		}
 		c.retry(ctx, queueURL, handle, attempt)
 		return
 	}
 
-	result, duplicate, err := c.processor.ProcessMessage(ctx, c.config.ConsumerName, decoded.MessageID, decoded.PayloadHash, decoded.Command, time.Now().UTC())
+	messageCtx := observability.WithCorrelation(ctx, decoded.MessageID)
+	result, duplicate, err := c.processor.ProcessMessage(messageCtx, c.config.ConsumerName, decoded.MessageID, decoded.PayloadHash, decoded.Command, time.Now().UTC())
 	if err != nil {
 		if ctx.Err() != nil {
 			c.release(queueURL, handle)
 			return
 		}
 		c.logMessageError("SQS financial processing failed; message remains retryable", message, err)
+		if c.config.MaxReceiveCount > 0 && attempt >= c.config.MaxReceiveCount && c.config.Metrics != nil {
+			c.config.Metrics.ObserveRedriveCandidate()
+		}
 		c.retry(ctx, queueURL, handle, attempt)
 		return
 	}
@@ -212,6 +222,7 @@ func (c *Consumer) handleMessage(ctx context.Context, queueURL string, message t
 	if c.config.Logger != nil {
 		c.config.Logger.Info("SQS message committed and deleted",
 			slog.String("messageId", decoded.MessageID),
+			slog.String("correlationId", observability.Correlation(messageCtx)),
 			slog.String("transactionId", result.TransactionID.String()),
 			slog.String("walletId", decoded.Command.WalletID.String()),
 			slog.String("providerId", decoded.Command.ProviderID),
@@ -222,6 +233,9 @@ func (c *Consumer) handleMessage(ctx context.Context, queueURL string, message t
 }
 
 func (c *Consumer) retry(ctx context.Context, queueURL, receiptHandle string, attempt int) {
+	if c.config.Metrics != nil {
+		c.config.Metrics.ObserveRetry("sqs")
+	}
 	delay := retryDelay(c.config.RetryVisibilityBackoff, attempt, c.config.VisibilityTimeout)
 	visibility := int32(delay / time.Second)
 	if delay > 0 && visibility == 0 {
@@ -247,7 +261,11 @@ func (c *Consumer) logError(message string, err error) {
 
 func (c *Consumer) logMessageError(message string, received types.Message, err error) {
 	if c.config.Logger != nil {
-		c.config.Logger.Error(message, slog.String("sqsMessageId", stringValue(received.MessageId)), slog.String("error", err.Error()))
+		messageID := stringValue(received.MessageId)
+		c.config.Logger.Error(message,
+			slog.String("messageId", messageID),
+			slog.String("correlationId", messageID),
+			slog.String("error", err.Error()))
 	}
 }
 

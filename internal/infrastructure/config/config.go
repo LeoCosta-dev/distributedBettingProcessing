@@ -26,6 +26,7 @@ const (
 	defaultSQSWaitTime      = 10 * time.Second
 	defaultSQSMaxMessages   = 1
 	defaultSQSBackoff       = 5 * time.Second
+	defaultSQSMaxReceive    = 5
 	defaultReferencePoll    = time.Second
 	defaultReferenceMax     = 10
 	defaultReferenceBackoff = time.Second
@@ -59,6 +60,7 @@ type Config struct {
 	SQSWaitTime               time.Duration
 	SQSMaxMessages            int32
 	SQSRetryVisibilityBackoff time.Duration
+	SQSMaxReceiveCount        int
 	ReferencePollInterval     time.Duration
 	ReferenceMaxAttempts      int
 	ReferenceBackoff          time.Duration
@@ -96,6 +98,7 @@ func Load() (Config, error) {
 		SQSWaitTime:               defaultSQSWaitTime,
 		SQSMaxMessages:            defaultSQSMaxMessages,
 		SQSRetryVisibilityBackoff: defaultSQSBackoff,
+		SQSMaxReceiveCount:        defaultSQSMaxReceive,
 		ReferencePollInterval:     defaultReferencePoll,
 		ReferenceMaxAttempts:      defaultReferenceMax,
 		ReferenceBackoff:          defaultReferenceBackoff,
@@ -140,6 +143,13 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("%w: SQS_RETRY_VISIBILITY_BACKOFF_SECONDS=%q", ErrInvalidConfiguration, raw)
 		}
 		cfg.SQSRetryVisibilityBackoff = time.Duration(seconds) * time.Second
+	}
+	if raw := strings.TrimSpace(os.Getenv("SQS_MAX_RECEIVE_COUNT")); raw != "" {
+		count, err := strconv.Atoi(raw)
+		if err != nil || count < 1 {
+			return Config{}, fmt.Errorf("%w: SQS_MAX_RECEIVE_COUNT=%q", ErrInvalidConfiguration, raw)
+		}
+		cfg.SQSMaxReceiveCount = count
 	}
 	if raw := strings.TrimSpace(os.Getenv("REFERENCE_POLL_INTERVAL")); raw != "" {
 		parsed, err := time.ParseDuration(raw)

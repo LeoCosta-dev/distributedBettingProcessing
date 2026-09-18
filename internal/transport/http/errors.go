@@ -16,6 +16,7 @@ import (
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/domain/money"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/domain/wager"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/keycloak"
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/observability"
 )
 
 // errorCode is the machine readable error identifier exposed on the wire.
@@ -95,6 +96,7 @@ func writeError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err
 	mapped := mapError(err)
 	if mapped.status >= http.StatusInternalServerError && logger != nil {
 		logger.Error("request failed",
+			slog.String("correlationId", observability.Correlation(r.Context())),
 			slog.String("method", r.Method),
 			slog.String("path", r.URL.Path),
 			slog.Int("status", mapped.status),

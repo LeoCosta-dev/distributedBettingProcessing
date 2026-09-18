@@ -19,6 +19,7 @@ import (
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/domain/money"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/domain/wager"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/keycloak"
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/observability"
 )
 
 type fakeAuthenticator struct {
@@ -125,7 +126,60 @@ func testIdentity(providerID string, roles ...string) keycloak.Identity {
 }
 
 func testRouter(auth Authenticator, financialService FinancialUseCases, queries QueryUseCases, checkers ...Checker) http.Handler {
-	return NewRouter(financialService, queries, NewHealthRegistry(checkers...), auth, testLogger()).Handler()
+	return NewRouter(financialService, queries, NewHealthRegistry(checkers...), auth, testLogger(), observability.NewMetrics()).Handler()
+}
+
+func TestRouterExposesMetricsAndCorrelationID(t *testing.T) {
+	metrics := observability.NewMetrics()
+	metrics.ObserveProcessing("PROCESSED", time.Second)
+	handler := NewRouter(&fakeFinancial{}, &fakeQueries{}, NewHealthRegistry(), &fakeAuthenticator{identities: map[string]keycloak.Identity{}}, testLogger(), metrics).Handler()
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	request.Header.Set("X-Correlation-ID", "correlation-test")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `wager_processing_total{status="PROCESSED"} 1`) {
+		t.Fatalf("metrics response = %d %q", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("X-Correlation-ID"); got != "correlation-test" {
+		t.Fatalf("correlation header = %q", got)
+	}
+}
+
+func TestCorrelationHeaderIsBoundedAndSafe(t *testing.T) {
+	auth := &fakeAuthenticator{identities: map[string]keycloak.Identity{}}
+	handler := testRouter(auth, &fakeFinancial{}, &fakeQueries{})
+	tests := []struct {
+		name       string
+		input      string
+		wantExact  string
+		wantLength int
+	}{
+		{name: "missing generates", input: "", wantLength: 36},
+		{name: "valid preserved", input: "trace-01.A_b:ok", wantExact: "trace-01.A_b:ok"},
+		{name: "maximum boundary preserved", input: strings.Repeat("a", observability.MaxCorrelationIDLength), wantLength: observability.MaxCorrelationIDLength},
+		{name: "oversized replaced", input: strings.Repeat("a", observability.MaxCorrelationIDLength+1), wantLength: 36},
+		{name: "control character replaced", input: "trace\nforged", wantLength: 36},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/health/live", nil)
+			if test.input != "" {
+				request.Header.Set("X-Correlation-ID", test.input)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			got := response.Header().Get("X-Correlation-ID")
+			if test.wantExact != "" && got != test.wantExact {
+				t.Fatalf("correlation = %q, want %q", got, test.wantExact)
+			}
+			if test.wantLength > 0 && len(got) != test.wantLength {
+				t.Fatalf("correlation length = %d, want %d (%q)", len(got), test.wantLength, got)
+			}
+			if strings.ContainsAny(got, "\r\n\t ") {
+				t.Fatalf("unsafe correlation response header = %q", got)
+			}
+		})
+	}
 }
 
 func TestRouterAuthenticationAuthorizationAndProviderIsolation(t *testing.T) {
@@ -215,9 +269,11 @@ func TestRouterAuthenticationAuthorizationAndProviderIsolation(t *testing.T) {
 
 func TestProcessTransactionTranslatesAuthenticatedIdentityAndReplay(t *testing.T) {
 	var captured financial.Command
+	var capturedCorrelation string
 	financialService := &fakeFinancial{
-		process: func(_ context.Context, command financial.Command, _ time.Time) (financial.Result, error) {
+		process: func(ctx context.Context, command financial.Command, _ time.Time) (financial.Result, error) {
 			captured = command
+			capturedCorrelation = observability.Correlation(ctx)
 			return financial.Result{
 				TransactionID: command.ID,
 				State:         wager.Processed,
@@ -234,6 +290,7 @@ func TestProcessTransactionTranslatesAuthenticatedIdentityAndReplay(t *testing.T
 	request := httptest.NewRequest(http.MethodPost, "/wagering/transactions", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer provider-token")
 	request.Header.Set("Idempotency-Key", "idem-1")
+	request.Header.Set("X-Correlation-ID", "http-correlation-1")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -241,6 +298,9 @@ func TestProcessTransactionTranslatesAuthenticatedIdentityAndReplay(t *testing.T
 	}
 	if captured.ProviderID != "provider-alpha" || captured.IdempotencyKey != "idem-1" || captured.Amount.Minor() != 2508 {
 		t.Fatalf("command = %+v", captured)
+	}
+	if capturedCorrelation != "http-correlation-1" || response.Header().Get("X-Correlation-ID") != capturedCorrelation {
+		t.Fatalf("correlation propagation = context %q response %q", capturedCorrelation, response.Header().Get("X-Correlation-ID"))
 	}
 	if strings.Contains(response.Body.String(), "providerId") {
 		t.Fatalf("provider identity leaked into response: %s", response.Body.String())

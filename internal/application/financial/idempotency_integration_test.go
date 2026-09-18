@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/domain/wager"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/postgres"
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/observability"
 )
 
 func TestPersistentIdempotencyAcrossReplayRestartAndInstances(t *testing.T) {
@@ -27,7 +29,8 @@ func TestPersistentIdempotencyAcrossReplayRestartAndInstances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := NewService(db)
+	metrics := observability.NewMetrics()
+	service := NewService(db, metrics)
 	now := time.Now().UTC()
 	walletID := uuid.New()
 	opening := moneyMust("100.00", "BRL")
@@ -122,6 +125,11 @@ func TestPersistentIdempotencyAcrossReplayRestartAndInstances(t *testing.T) {
 	if wallet, err := postgres.NewWalletRepository(db).Find(ctx, walletID); err != nil || wallet.Balance != 8500 {
 		db.Close()
 		t.Fatalf("conflict changed wallet: %+v %v", wallet, err)
+	}
+	metricText := metrics.Render()
+	if !strings.Contains(metricText, `wager_idempotency_conflict_total 3`) || !strings.Contains(metricText, `wager_concurrency_conflict_total 0`) {
+		db.Close()
+		t.Fatalf("sequential identity conflicts were misclassified: %s", metricText)
 	}
 	historical := validCommand(walletID, uuid.New(), "idempotent-historical-"+walletID.String(), wager.Bet, moneyMust("1.00", "BRL"))
 	historical.PlayerID = "idempotency-player-" + walletID.String()

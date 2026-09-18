@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/observability"
 )
 
 type ReferenceWorkerConfig struct {
@@ -12,6 +14,7 @@ type ReferenceWorkerConfig struct {
 	MaxAttempts  int
 	Backoff      time.Duration
 	Logger       *slog.Logger
+	Metrics      *observability.Metrics
 }
 
 // ReferenceWorker owns a durable retry loop. Its context is independent from
@@ -88,6 +91,9 @@ func (w *ReferenceWorker) run(ctx context.Context) {
 		processed, err := w.service.ProcessPendingReference(ctx, time.Now().UTC(), w.config.MaxAttempts, w.config.Backoff)
 		if err != nil && ctx.Err() == nil && w.config.Logger != nil {
 			w.config.Logger.Error("pending reference processing failed", slog.String("error", err.Error()))
+		}
+		if err != nil && ctx.Err() == nil && w.config.Metrics != nil {
+			w.config.Metrics.ObserveRetry("pending_reference")
 		}
 		if processed {
 			continue

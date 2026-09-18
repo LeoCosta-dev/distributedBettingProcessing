@@ -4,9 +4,8 @@ Backend challenge implementation for distributed wagering transaction processing
 
 ## Status
 
-Loop 6 HTTP is checkpointed and the Loop 7 SQS/inbox corrections have real
-PostgreSQL and LocalStack execution evidence. Loop 7 is pending final human
-review.
+Loop 9 is checkpointed with real PostgreSQL and LocalStack evidence. Loop 10
+is implemented and pending human review.
 
 See:
 
@@ -20,7 +19,8 @@ See:
 Loop 7 includes the durable SQS inbox consumer and PostgreSQL/SQS readiness.
 Loop 8 adds durable pending-reference resolution with restartable retries.
 Loop 9 adds transactional outbox publication with recoverable claims and stable
-event IDs. Observability and failure engineering remain pending. Its SQS integration tests are conditional for the
+event IDs. Loop 10 adds structured diagnostics and Prometheus-compatible
+metrics; failure engineering remains pending. Its SQS integration tests are conditional for the
 default local gate, but a skipped test is not evidence; use an available
 compatible runtime to execute PostgreSQL and LocalStack when the integration
 gate applies.
@@ -76,3 +76,15 @@ Production, commercial, redistribution, and derivative use is not
 authorized without prior written permission from the copyright holder.
 
 See [LICENSE](LICENSE).
+
+## Observability
+
+The process emits JSON logs. HTTP requests accept or generate
+`X-Correlation-ID` (bounded to a safe ASCII implementation format), and
+`GET /metrics` exposes low-cardinality processing, separately classified
+duplicate/retry, receive-exhaustion redrive-candidate, outbox-lag and
+reconciliation metrics. The application does not claim to observe broker DLQ
+insertion directly. Targeted observability integrations use the real
+PostgreSQL, LocalStack, Keycloak and Fx stack. Loop 9 ordering integrations
+use isolated PostgreSQL schemas and FIFO queues, and the aggregate integration
+command passes with that test-harness correction.

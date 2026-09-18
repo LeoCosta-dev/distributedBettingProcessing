@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/observability"
 )
 
 // Router translates HTTP requests into application commands and application
@@ -23,6 +25,7 @@ type Router struct {
 	health        *HealthRegistry
 	authenticator Authenticator
 	logger        *slog.Logger
+	metrics       *observability.Metrics
 }
 
 func NewRouter(
@@ -31,13 +34,19 @@ func NewRouter(
 	health *HealthRegistry,
 	authenticator Authenticator,
 	logger *slog.Logger,
+	metricSets ...*observability.Metrics,
 ) *Router {
+	var metrics *observability.Metrics
+	if len(metricSets) > 0 {
+		metrics = metricSets[0]
+	}
 	return &Router{
 		financial:     financialService,
 		queries:       queries,
 		health:        health,
 		authenticator: authenticator,
 		logger:        logger,
+		metrics:       metrics,
 	}
 }
 
@@ -54,6 +63,9 @@ func (r *Router) Handler() http.Handler {
 	}))
 	mux.Handle("/health/ready", r.methods(map[string]http.Handler{
 		http.MethodGet: http.HandlerFunc(r.readiness),
+	}))
+	mux.Handle("/metrics", r.methods(map[string]http.Handler{
+		http.MethodGet: http.HandlerFunc(r.metricsHandler),
 	}))
 
 	mux.Handle("/wagering/transactions", r.methods(map[string]http.Handler{
@@ -84,7 +96,25 @@ func (r *Router) Handler() http.Handler {
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		r.writeError(w, request, errRouteNotFound)
 	}))
-	return mux
+	return r.correlationMiddleware(mux)
+}
+
+func (r *Router) metricsHandler(w http.ResponseWriter, request *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	if r.metrics == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(r.metrics.Render()))
+}
+
+func (r *Router) correlationMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		correlationID := observability.NormalizeCorrelationID(request.Header.Get("X-Correlation-ID"))
+		w.Header().Set("X-Correlation-ID", correlationID)
+		next.ServeHTTP(w, request.WithContext(observability.WithCorrelation(request.Context(), correlationID)))
+	})
 }
 
 // methods dispatches on the request method and answers a wrong method with the

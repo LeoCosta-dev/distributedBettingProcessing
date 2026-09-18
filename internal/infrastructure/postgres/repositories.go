@@ -291,6 +291,21 @@ func (r *OutboxRepository) CountByTypeAndCausation(ctx context.Context, eventTyp
 	return count, err
 }
 
+// PendingLag returns the age of the oldest unpublished, non-terminal event.
+// A zero result means there is no pending or claimed publication work.
+func (r *OutboxRepository) PendingLag(ctx context.Context, now time.Time) (time.Duration, error) {
+	var occurredAt *time.Time
+	err := r.db.exec.QueryRow(ctx, `SELECT MIN(occurred_at) FROM outbox WHERE status IN ('PENDING','CLAIMED')`).Scan(&occurredAt)
+	if err != nil || occurredAt == nil {
+		return 0, err
+	}
+	lag := now.Sub(*occurredAt)
+	if lag < 0 {
+		return 0, nil
+	}
+	return lag, nil
+}
+
 func (r *OutboxRepository) FindFirstByTypeAndAggregate(ctx context.Context, eventType string, aggregateID uuid.UUID) (OutboxRecord, error) {
 	var record OutboxRecord
 	var correlationID, causationID, lastError *string

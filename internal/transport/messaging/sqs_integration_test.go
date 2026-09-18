@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/config"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/postgres"
 	sqsinfrastructure "github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/sqs"
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/observability"
 )
 
 type localStackFixture struct {
@@ -297,7 +299,8 @@ func TestSQSConsumerAgainstLocalStackAndPostgres(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	service := financial.NewService(db)
+	metrics := observability.NewMetrics()
+	service := financial.NewService(db, metrics)
 	walletID := uuid.New()
 	playerID := "sqs-player-" + walletID.String()
 	if err := service.OpenWallet(ctx, walletID, playerID, moneyMustTest("100.00", "BRL"), time.Now().UTC()); err != nil {
@@ -318,6 +321,7 @@ func TestSQSConsumerAgainstLocalStackAndPostgres(t *testing.T) {
 		VisibilityTimeout:      2 * time.Second,
 		WaitTime:               time.Second,
 		RetryVisibilityBackoff: 0,
+		Metrics:                metrics,
 	})
 	if err := consumer.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -375,6 +379,9 @@ func TestSQSConsumerAgainstLocalStackAndPostgres(t *testing.T) {
 	}
 	if count, countErr := postgres.NewLedgerRepository(db).CountByTransaction(ctx, transaction.ID); countErr != nil || count != 1 {
 		t.Fatalf("duplicate SQS ledger entries = %d, error=%v", count, countErr)
+	}
+	if got := metrics.Render(); !strings.Contains(got, `wager_duplicate_total{kind="sqs_inbox"}`) {
+		t.Fatalf("SQS redelivery was not observed through the real consumer path: %s", got)
 	}
 	if wallet, walletErr := postgres.NewWalletRepository(db).Find(ctx, walletID); walletErr != nil || wallet.Balance != 7500 {
 		t.Fatalf("duplicate SQS wallet = %+v, error=%v", wallet, walletErr)
@@ -601,11 +608,14 @@ func TestMalformedSQSMessageRedrivesToLocalStackDLQ(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	metrics := observability.NewMetrics()
 	consumer := NewConsumer(queue, neverCalledProcessor{}, Config{
 		ConsumerName:           "sqs-dlq-consumer",
 		VisibilityTimeout:      time.Second,
 		WaitTime:               time.Second,
 		RetryVisibilityBackoff: 0,
+		MaxReceiveCount:        2,
+		Metrics:                metrics,
 	})
 	if err := consumer.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -637,6 +647,9 @@ func TestMalformedSQSMessageRedrivesToLocalStackDLQ(t *testing.T) {
 	}
 	if !redriven {
 		t.Fatal("malformed message was not redriven")
+	}
+	if got := metrics.Render(); !strings.Contains(got, "wager_sqs_redrive_candidate_total") {
+		t.Fatalf("receive exhaustion candidate was not observed: %s", got)
 	}
 }
 

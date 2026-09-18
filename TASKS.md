@@ -414,25 +414,39 @@ Make distributed processing diagnosable.
 
 ### Tasks
 
-* [ ] JSON logging
-* [ ] correlation ID
-* [ ] transaction ID
-* [ ] wallet ID
-* [ ] provider ID
-* [ ] message ID
-* [ ] processing metrics
-* [ ] duplicate metrics
-* [ ] retry metrics
-* [ ] DLQ metrics
-* [ ] outbox lag
-* [ ] reconciliation divergence
+* [x] JSON logging
+* [x] correlation ID
+* [x] transaction ID
+* [x] wallet ID
+* [x] provider ID
+* [x] message ID
+* [x] processing metrics
+* [x] duplicate metrics
+* [x] retry metrics
+* [x] receive-exhaustion/redrive-candidate metrics (broker DLQ insertion is
+  not observed by the application)
+* [x] outbox lag
+* [x] reconciliation divergence
 
 ### Verification
 
-* [ ] logs contain required identifiers
-* [ ] sensitive data is not logged
-* [ ] metrics exposed
-* [ ] health checks verified
+* [x] logs contain required identifiers
+* [x] sensitive data is not logged
+* [x] metrics exposed
+* [x] health checks verified
+* [x] HTTP/SQS/pending-reference/outbox metric paths exercised without direct
+  collector increments
+* [x] correlation input safety and Fx JSON-only operational logging verified
+* [x] receive-exhaustion is documented as a redrive candidate, not confirmed
+  DLQ insertion
+* [x] idempotency duplicates are distinct from SQS inbox redelivery and
+  sequential idempotency conflicts are distinct from concurrency conflicts
+
+> The targeted Loop 10 observability integrations were executed with real
+> PostgreSQL, LocalStack, Keycloak and Fx. The Loop 9 ordering integrations
+> use isolated PostgreSQL schemas and FIFO queues so concurrent packages cannot
+> introduce unrelated outbox rows or consume the scenario's messages; the
+> aggregate real-integration command passes with that test-harness correction.
 
 ---
 

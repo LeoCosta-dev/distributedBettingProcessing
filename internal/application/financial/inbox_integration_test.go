@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/domain/wager"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/postgres"
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/observability"
 )
 
 func TestProcessMessageAtomicallyCompletesInboxAndReplaysWithoutMutation(t *testing.T) {
@@ -31,7 +33,8 @@ func TestProcessMessageAtomicallyCompletesInboxAndReplaysWithoutMutation(t *test
 	walletID := uuid.New()
 	playerID := "inbox-player-" + walletID.String()
 	now := time.Now().UTC()
-	service := NewService(db)
+	metrics := observability.NewMetrics()
+	service := NewService(db, metrics)
 	if err := service.OpenWallet(ctx, walletID, playerID, moneyMust("100.00", "BRL"), now); err != nil {
 		t.Fatal(err)
 	}
@@ -118,6 +121,9 @@ func TestProcessMessageAtomicallyCompletesInboxAndReplaysWithoutMutation(t *test
 	}
 	if count, countErr := ledger.CountByTransaction(ctx, first.TransactionID); countErr != nil || count != 1 {
 		t.Fatalf("restart replay ledger entries = %d, error=%v", count, countErr)
+	}
+	if got := metrics.Render(); !strings.Contains(got, `wager_duplicate_total{kind="sqs_inbox"} 1`) {
+		t.Fatalf("SQS inbox duplicate was not observed in metrics: %s", got)
 	}
 }
 

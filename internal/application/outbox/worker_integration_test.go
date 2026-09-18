@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/postgres"
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/observability"
 )
 
 type recordingPublisher struct {
@@ -360,13 +361,17 @@ func TestProductionWorkerClaimOneRetryKeepsSuccessorBlocked(t *testing.T) {
 	setOutboxNextAttempt(t, ctx, databaseURL, e3, claimTime.Add(-time.Minute))
 	setOutboxNextAttempt(t, ctx, databaseURL, e1, time.Unix(0, 0).UTC())
 	publisher := &recordingPublisher{target: e1.String(), failures: 1}
-	worker := NewWorker(db, publisher, Config{Backoff: time.Hour, ClaimLease: time.Minute})
+	metrics := observability.NewMetrics()
+	worker := NewWorker(db, publisher, Config{Backoff: time.Hour, ClaimLease: time.Minute, Metrics: metrics})
 	now := claimTime
 	if _, err := worker.processOne(ctx, now); err != nil {
 		t.Fatal(err)
 	}
 	if record, findErr := postgres.NewOutboxRepository(db).FindByID(ctx, e1); findErr != nil || record.Status != "PENDING" || !record.NextAttemptAt.After(now) {
 		t.Fatalf("E1 retry state = %+v, error=%v", record, findErr)
+	}
+	if got := metrics.Render(); !strings.Contains(got, `wager_retry_total{component="outbox"} 1`) {
+		t.Fatalf("outbox retry was not observed through Worker.processOne: %s", got)
 	}
 	if _, err := worker.processOne(ctx, now); err != nil {
 		t.Fatal(err)

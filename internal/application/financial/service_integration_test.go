@@ -4,14 +4,17 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/domain/money"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/domain/wager"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/postgres"
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/observability"
 )
 
 func TestProcessFinancialOperationsAtomically(t *testing.T) {
@@ -220,6 +223,41 @@ func TestProcessFinancialOperationsAtomically(t *testing.T) {
 	rollbackNegative.ReferenceExternalID = negativeRefund.ExternalID
 	if got, err := service.Process(ctx, rollbackNegative, now); err != nil || got.State != wager.Rejected || got.Balance != 500 {
 		t.Fatalf("negative rollback: %+v %v", got, err)
+	}
+}
+
+func TestReconciliationDivergenceMetricUsesProductionPath(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	db, err := postgres.NewRepository(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	metrics := observability.NewMetrics()
+	service := NewService(db, metrics)
+	walletID := uuid.New()
+	if err := service.OpenWallet(ctx, walletID, "metrics-reconciliation-player-"+walletID.String(), moneyMust("10.00", "BRL"), time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(ctx, `UPDATE wallets SET balance = balance + 1 WHERE id = $1`, walletID); err != nil {
+		t.Fatal(err)
+	}
+	reconciliation, err := service.Reconcile(ctx, walletID)
+	if err != nil || reconciliation.Consistent {
+		t.Fatalf("reconciliation = %+v error=%v", reconciliation, err)
+	}
+	if got := metrics.Render(); !strings.Contains(got, "wager_reconciliation_divergence_total 1") {
+		t.Fatalf("divergence was not observed through Reconcile: %s", got)
 	}
 }
 

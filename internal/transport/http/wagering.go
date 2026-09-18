@@ -1,6 +1,7 @@
 package http
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/application/financial"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/application/query"
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/observability"
 )
 
 // idempotencyKeyHeader carries the caller supplied idempotency key for external
@@ -102,6 +104,15 @@ func (r *Router) processTransaction(w http.ResponseWriter, request *http.Request
 	if err != nil {
 		r.writeError(w, request, err)
 		return
+	}
+	if r.logger != nil {
+		r.logger.Info("wager transaction processed",
+			slog.String("correlationId", observability.Correlation(request.Context())),
+			slog.String("transactionId", result.TransactionID.String()),
+			slog.String("walletId", command.WalletID.String()),
+			slog.String("providerId", command.ProviderID),
+			slog.String("status", string(result.State)),
+		)
 	}
 	replay := isIdempotentReplay(result, command.ID)
 	response, err := resultResponse(result, &replay)

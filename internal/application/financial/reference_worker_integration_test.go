@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/domain/wager"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/postgres"
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/observability"
 )
 
 func TestPendingReferenceResolvesAfterReferenceArrives(t *testing.T) {
@@ -28,7 +30,8 @@ func TestPendingReferenceResolvesAfterReferenceArrives(t *testing.T) {
 	defer db.Close()
 
 	now := time.Now().UTC()
-	service := NewService(db)
+	metrics := observability.NewMetrics()
+	service := NewService(db, metrics)
 	walletID := uuid.New()
 	playerID := "reference-player-" + walletID.String()
 	if err := service.OpenWallet(ctx, walletID, playerID, moneyMust("100.00", "BRL"), now); err != nil {
@@ -58,6 +61,9 @@ func TestPendingReferenceResolvesAfterReferenceArrives(t *testing.T) {
 		return findErr == nil && current.State == string(wager.PendingReference) && current.ReferenceAttempts == 1, findErr
 	}); err != nil {
 		t.Fatalf("missing-reference retry: %v", err)
+	}
+	if got := metrics.Render(); !strings.Contains(got, `wager_retry_total{component="pending_reference"}`) {
+		t.Fatalf("pending-reference retry was not observed after durable retry scheduling: %s", got)
 	}
 
 	bet := validCommand(walletID, uuid.New(), referenceExternal, wager.Bet, moneyMust("20.00", "BRL"))

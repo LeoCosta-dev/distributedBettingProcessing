@@ -15,6 +15,7 @@ import (
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/domain/wager"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/domain/wallet"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/postgres"
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/observability"
 )
 
 var (
@@ -88,9 +89,18 @@ type balanceChange struct {
 	WalletVersion int64
 }
 
-type Service struct{ db *postgres.Repository }
+type Service struct {
+	db      *postgres.Repository
+	metrics *observability.Metrics
+}
 
-func NewService(db *postgres.Repository) *Service { return &Service{db: db} }
+func NewService(db *postgres.Repository, metricSets ...*observability.Metrics) *Service {
+	var metrics *observability.Metrics
+	if len(metricSets) > 0 {
+		metrics = metricSets[0]
+	}
+	return &Service{db: db, metrics: metrics}
+}
 
 func (s *Service) OpenWallet(ctx context.Context, id uuid.UUID, playerID string, opening money.Money, now time.Time) error {
 	return s.db.WithTx(ctx, func(ctx context.Context, tx *postgres.Repository) error {
@@ -138,6 +148,7 @@ func (s *Service) OpenWallet(ctx context.Context, id uuid.UUID, playerID string,
 }
 
 func (s *Service) Process(ctx context.Context, cmd Command, now time.Time) (Result, error) {
+	started := time.Now()
 	prepared, err := prepareCommand(cmd)
 	if err != nil {
 		return Result{}, err
@@ -150,15 +161,30 @@ func (s *Service) Process(ctx context.Context, cmd Command, now time.Time) (Resu
 		return err
 	})
 	if err == nil {
+		if result.TransactionID != cmd.ID && s.metrics != nil {
+			s.metrics.ObserveDuplicate(observability.DuplicateKindHTTPIdempotency)
+		}
+		s.observeResult(result, time.Since(started))
 		return result, nil
 	}
 	if !isKnownIdentityViolation(err) {
+		s.observeError(err, time.Since(started))
 		return Result{}, err
 	}
 	if isReversalIdentityViolation(err) {
+		s.observeError(ErrIdempotencyConflict, time.Since(started))
 		return Result{}, ErrIdempotencyConflict
 	}
-	return s.resolveIdentityConflict(ctx, cmd)
+	result, err = s.resolveIdentityConflict(ctx, cmd)
+	if err != nil {
+		s.observeError(err, time.Since(started))
+	} else {
+		if s.metrics != nil {
+			s.metrics.ObserveDuplicate(observability.DuplicateKindHTTPIdempotency)
+		}
+		s.observeResult(result, time.Since(started))
+	}
+	return result, err
 }
 
 // ProcessMessage atomically records an SQS inbox identity, executes the
@@ -166,6 +192,7 @@ func (s *Service) Process(ctx context.Context, cmd Command, now time.Time) (Resu
 // returns the persisted financial result and duplicate=true without applying
 // another balance mutation.
 func (s *Service) ProcessMessage(ctx context.Context, consumerName, messageID, payloadHash string, cmd Command, now time.Time) (result Result, duplicate bool, err error) {
+	started := time.Now()
 	prepared, err := prepareCommand(cmd)
 	if err != nil {
 		return Result{}, false, err
@@ -203,6 +230,10 @@ func (s *Service) ProcessMessage(ctx context.Context, consumerName, messageID, p
 		return inbox.MarkCompleted(ctx, consumerName, messageID, now)
 	})
 	if err == nil {
+		if duplicate {
+			s.metrics.ObserveDuplicate(observability.DuplicateKindSQSInbox)
+		}
+		s.observeResult(result, time.Since(started))
 		return result, duplicate, nil
 	}
 	// An identity race must roll back the inbox together with every financial
@@ -212,9 +243,27 @@ func (s *Service) ProcessMessage(ctx context.Context, consumerName, messageID, p
 	// The message remains unacknowledged and follows the configured permanent
 	// failure/redrive policy instead.
 	if isKnownIdentityViolation(err) {
+		s.observeError(ErrIdempotencyConflict, time.Since(started))
 		return Result{}, false, ErrIdempotencyConflict
 	}
+	s.observeError(err, time.Since(started))
 	return Result{}, false, err
+}
+
+func (s *Service) observeResult(result Result, duration time.Duration) {
+	if s.metrics != nil {
+		s.metrics.ObserveProcessing(string(result.State), duration)
+	}
+}
+
+func (s *Service) observeError(err error, duration time.Duration) {
+	if s.metrics == nil {
+		return
+	}
+	if errors.Is(err, ErrIdempotencyConflict) {
+		s.metrics.ObserveIdempotencyConflict()
+	}
+	s.metrics.ObserveProcessing("error", duration)
 }
 
 func prepareCommand(cmd Command) (Command, error) {
@@ -404,7 +453,11 @@ func (s *Service) Reconcile(ctx context.Context, walletID uuid.UUID) (Reconcilia
 	if err != nil {
 		return Reconciliation{}, err
 	}
-	return Reconciliation{WalletBalance: w.Balance, LedgerBalance: ledgerBalance, Consistent: w.Balance == ledgerBalance}, nil
+	consistent := w.Balance == ledgerBalance
+	if !consistent {
+		s.metrics.ObserveReconciliationDivergence()
+	}
+	return Reconciliation{WalletBalance: w.Balance, LedgerBalance: ledgerBalance, Consistent: consistent}, nil
 }
 
 // ProcessPendingReference claims one due pending reversal and resolves it in a
@@ -415,6 +468,7 @@ func (s *Service) ProcessPendingReference(ctx context.Context, now time.Time, ma
 		maxAttempts = 1
 	}
 	processed := false
+	retryScheduled := false
 	err := s.db.WithTx(ctx, func(ctx context.Context, tx *postgres.Repository) error {
 		repository := postgres.NewWagerTransactionRepository(tx)
 		record, err := repository.FindNextPendingReferenceForUpdate(ctx, now)
@@ -425,93 +479,101 @@ func (s *Service) ProcessPendingReference(ctx context.Context, now time.Time, ma
 			return err
 		}
 		processed = true
-		return s.processPendingReferenceInTx(ctx, tx, record, now, maxAttempts, backoff)
+		var processErr error
+		retryScheduled, processErr = s.processPendingReferenceInTx(ctx, tx, record, now, maxAttempts, backoff)
+		return processErr
 	})
+	if err == nil && retryScheduled && s.metrics != nil {
+		s.metrics.ObserveRetry("pending_reference")
+	}
 	return processed, err
 }
 
-func (s *Service) processPendingReferenceInTx(ctx context.Context, tx *postgres.Repository, record postgres.WagerTransactionRecord, now time.Time, maxAttempts int, backoff time.Duration) error {
+func (s *Service) processPendingReferenceInTx(ctx context.Context, tx *postgres.Repository, record postgres.WagerTransactionRecord, now time.Time, maxAttempts int, backoff time.Duration) (bool, error) {
 	command, err := commandFromRecord(record)
 	if err != nil {
-		return err
+		return false, err
 	}
 	repository := postgres.NewWagerTransactionRepository(tx)
 	if err := repository.LockReferenceIdentity(ctx, record.ProviderID, record.ReferenceExternalID); err != nil {
-		return err
+		return false, err
 	}
 	reference, err := repository.FindByExternal(ctx, record.ProviderID, record.ReferenceExternalID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return s.advancePendingReferenceInTx(ctx, tx, record, now, maxAttempts, backoff, FailureCodeReferenceNotFound)
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if reference.State != string(wager.Processed) {
 		if reference.State == string(wager.Pending) || reference.State == string(wager.PendingReference) {
 			return s.advancePendingReferenceInTx(ctx, tx, record, now, maxAttempts, backoff, FailureCodeReferenceNotResolved)
 		}
-		return s.rejectPendingReferenceInTx(ctx, tx, record, command, now, FailureCodeReferenceNotSuccessful)
+		_, rejectErr := s.rejectPendingReferenceInTx(ctx, tx, record, command, now, FailureCodeReferenceNotSuccessful)
+		return false, rejectErr
 	}
 	if !validReference(command, reference) {
-		return s.rejectPendingReferenceInTx(ctx, tx, record, command, now, FailureCodeReferenceInvalid)
+		_, rejectErr := s.rejectPendingReferenceInTx(ctx, tx, record, command, now, FailureCodeReferenceInvalid)
+		return false, rejectErr
 	}
 	walletRecord, err := postgres.NewWalletRepository(tx).FindForUpdate(ctx, command.WalletID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	txDomain, err := wager.New(command.ID.String(), command.ExternalID, command.ProviderID, command.WalletID.String(), command.Type, command.Amount)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := txDomain.Transition(wager.PendingReference); err != nil {
-		return err
+		return false, err
 	}
 	_, err = s.applyOperationInTx(ctx, tx, command, walletRecord, txDomain, &reference, &record, now)
-	return err
+	return false, err
 }
 
-func (s *Service) advancePendingReferenceInTx(ctx context.Context, tx *postgres.Repository, record postgres.WagerTransactionRecord, now time.Time, maxAttempts int, backoff time.Duration, exhaustionCode string) error {
+func (s *Service) advancePendingReferenceInTx(ctx context.Context, tx *postgres.Repository, record postgres.WagerTransactionRecord, now time.Time, maxAttempts int, backoff time.Duration, exhaustionCode string) (bool, error) {
 	record.ReferenceAttempts++
 	if record.ReferenceAttempts >= maxAttempts {
 		command, err := commandFromRecord(record)
 		if err != nil {
-			return err
+			return false, err
 		}
-		return s.rejectPendingReferenceInTx(ctx, tx, record, command, now, exhaustionCode)
+		_, rejectErr := s.rejectPendingReferenceInTx(ctx, tx, record, command, now, exhaustionCode)
+		return false, rejectErr
 	}
 	record.ReferenceNextAttemptAt = nextReferenceAttempt(now, backoff, record.ReferenceAttempts)
 	record.UpdatedAt = now
-	return postgres.NewWagerTransactionRepository(tx).UpdatePendingReference(ctx, record)
+	return true, postgres.NewWagerTransactionRepository(tx).UpdatePendingReference(ctx, record)
 }
 
-func (s *Service) rejectPendingReferenceInTx(ctx context.Context, tx *postgres.Repository, record postgres.WagerTransactionRecord, command Command, now time.Time, failureCode string) error {
+func (s *Service) rejectPendingReferenceInTx(ctx context.Context, tx *postgres.Repository, record postgres.WagerTransactionRecord, command Command, now time.Time, failureCode string) (bool, error) {
 	walletRecord, err := postgres.NewWalletRepository(tx).FindForUpdate(ctx, command.WalletID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	txDomain, err := wager.New(command.ID.String(), command.ExternalID, command.ProviderID, command.WalletID.String(), command.Type, command.Amount)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := txDomain.Transition(wager.PendingReference); err != nil {
-		return err
+		return false, err
 	}
 	if err := txDomain.Transition(wager.Rejected); err != nil {
-		return err
+		return false, err
 	}
 	result := Result{TransactionID: command.ID, State: wager.Rejected, Balance: walletRecord.Balance, Amount: command.Amount, FailureCode: failureCode}
 	record.State = string(result.State)
 	record.Result, err = marshalResult(result)
 	if err != nil {
-		return err
+		return false, err
 	}
 	record.ReferenceNextAttemptAt = nil
 	record.FailureCode = failureCode
 	record.UpdatedAt = now
 	if err := postgres.NewWagerTransactionRepository(tx).UpdatePendingReference(ctx, record); err != nil {
-		return err
+		return false, err
 	}
-	return insertEvent(ctx, tx, "WagerTransactionRejected", command.Type, command.ID, command.WalletID, result, walletRecord.Version, now, command.IdempotencyKey)
+	return false, insertEvent(ctx, tx, "WagerTransactionRejected", command.Type, command.ID, command.WalletID, result, walletRecord.Version, now, command.IdempotencyKey)
 }
 
 func commandFromRecord(record postgres.WagerTransactionRecord) (Command, error) {

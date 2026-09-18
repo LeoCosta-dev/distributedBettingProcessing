@@ -1165,6 +1165,53 @@ Decision:
 * The worker owns an explicit lifecycle context and stops before PostgreSQL is
   closed. Process-crash injection and failure attacks remain Loop 11 scope.
 
+## ADR-010 — Loop 10 observability
+
+Status: IMPLEMENTED — PENDING HUMAN REVIEW
+Date: 2026-09-18
+
+Decision:
+
+* The process uses the standard-library `slog` JSON handler. HTTP requests
+  receive or generate an `X-Correlation-ID`, which is returned in the response
+  and propagated through request logs. External values are preserved only when
+  they are non-empty, at most 128 ASCII bytes and contain `[A-Za-z0-9._:-]`;
+  invalid values are replaced with a generated ID. SQS message logs use the
+  envelope `messageId` as the correlation identifier when no separate
+  transport correlation exists.
+* Structured logs include identifiers available at each boundary: correlation
+  ID, message ID, transaction ID, wallet ID and provider ID. They do not log
+  credentials, tokens or complete financial payloads.
+* The internal metrics registry exposes Prometheus-compatible text at
+  `GET /metrics`. Counters cover processing status, separately labelled
+  `sqs_inbox` and `http_idempotency` duplicates, retries by a bounded
+  component set, receive-exhaustion redrive candidates, explicitly
+  classifiable concurrency conflicts, idempotency conflicts and
+  reconciliation divergence. It also exposes processing latency and the age
+  of the oldest pending/claimed outbox event. IDs are not metric labels.
+* `wager_sqs_redrive_candidate_total` is incremented when a failed message
+  reaches the configured `SQS_MAX_RECEIVE_COUNT`; the application does not
+  observe the broker's subsequent DLQ insertion, so the broker remains
+  authoritative for actual redrive. The metric is not an IAM or exactly-once
+  claim. Sequential idempotency conflicts are reported separately and do not
+  imply a concurrency conflict. The current wallet-locking protocol exposes
+  no independent concurrency-conflict signal, so that counter remains zero
+  until a classifiable serialization, version or claim conflict is observed.
+* Fx lifecycle diagnostics use its supported no-op event logger so the
+  operational stream remains JSON-only; application lifecycle records still
+  use the `slog` JSON handler. This suppresses Fx's textual `[Fx]` stream and
+  does not change lifecycle hooks.
+* Existing `/health/live` and `/health/ready` endpoints remain separate. The
+  readiness contract continues to require PostgreSQL and SQS; metrics are not
+  used as a readiness dependency.
+
+Consequences:
+
+Observability is process-local and diagnostic; it is not a financial state
+store. Counters reset on process restart, while financial and outbox state
+remain PostgreSQL-backed. OpenTelemetry and dashboards remain optional and
+outside this loop. Failure injection remains Loop 11 scope.
+
 ---
 
 # 35. Current Status
@@ -1172,7 +1219,7 @@ Decision:
 Architecture status:
 
 ```text
-LOOP 9 IMPLEMENTED — PENDING HUMAN REVIEW
+LOOP 10 IMPLEMENTED — PENDING HUMAN REVIEW
 ```
 
 Implementation status must not be inferred from this document.

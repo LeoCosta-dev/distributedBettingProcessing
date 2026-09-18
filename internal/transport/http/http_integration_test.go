@@ -20,6 +20,7 @@ import (
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/domain/wager"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/keycloak"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/postgres"
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/observability"
 )
 
 func TestHTTPFinancialFlowAgainstPostgreSQL(t *testing.T) {
@@ -45,9 +46,10 @@ func TestHTTPFinancialFlowAgainstPostgreSQL(t *testing.T) {
 		"internal-token":       testIdentity("wallet-admin", keycloak.RoleInternal),
 		"other-provider-token": testIdentity(otherProviderID, keycloak.RoleProvider),
 	}}
-	service := financial.NewService(db)
 	queries := query.NewService(db)
-	handler := testRouter(auth, service, queries, postgres.NewPostgresChecker(db))
+	metrics := observability.NewMetrics()
+	service := financial.NewService(db, metrics)
+	handler := NewRouter(service, queries, NewHealthRegistry(postgres.NewPostgresChecker(db)), auth, testLogger(), metrics).Handler()
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -109,6 +111,13 @@ func TestHTTPFinancialFlowAgainstPostgreSQL(t *testing.T) {
 	}
 	if replayResult.IdempotentReplay == nil || !*replayResult.IdempotentReplay {
 		t.Fatalf("replay flag = %v", replayResult.IdempotentReplay)
+	}
+	metricsText := metrics.Render()
+	if !strings.Contains(metricsText, `wager_duplicate_total{kind="http_idempotency"} 1`) {
+		t.Fatalf("HTTP replay was not observed in metrics: %s", metricsText)
+	}
+	if !strings.Contains(metricsText, `wager_processing_total{status="PROCESSED"} 2`) {
+		t.Fatalf("HTTP processing count/latency path was not observed: %s", metricsText)
 	}
 
 	walletID, err := uuid.Parse(wallet.WalletID)

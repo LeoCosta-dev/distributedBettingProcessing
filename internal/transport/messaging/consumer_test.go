@@ -3,6 +3,7 @@ package messaging
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/application/financial"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/domain/money"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/domain/wager"
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/observability"
 )
 
 type fakeQueue struct {
@@ -113,7 +115,8 @@ func TestConsumerDeletesDurablyRejectedBusinessResult(t *testing.T) {
 
 func TestConsumerRetriesMalformedMessageUntilBrokerRedrive(t *testing.T) {
 	queue := &fakeQueue{queueURL: "queue-url"}
-	consumer := NewConsumer(queue, &fakeProcessor{}, Config{ConsumerName: "test-consumer", RetryVisibilityBackoff: time.Second})
+	metrics := observability.NewMetrics()
+	consumer := NewConsumer(queue, &fakeProcessor{}, Config{ConsumerName: "test-consumer", RetryVisibilityBackoff: time.Second, MaxReceiveCount: 1, Metrics: metrics})
 	consumer.handleMessage(context.Background(), "queue-url", types.Message{
 		Body:          aws.String(`{"messageId":"bad"}`),
 		ReceiptHandle: aws.String("receipt-1"),
@@ -121,6 +124,9 @@ func TestConsumerRetriesMalformedMessageUntilBrokerRedrive(t *testing.T) {
 	})
 	if queue.deleteCalls != 0 || queue.visibilityCalls != 1 {
 		t.Fatalf("malformed handling delete=%d visibility=%d", queue.deleteCalls, queue.visibilityCalls)
+	}
+	if got := metrics.Render(); !strings.Contains(got, "wager_sqs_redrive_candidate_total 1") {
+		t.Fatalf("redrive candidate was not observed through consumer path: %s", got)
 	}
 }
 

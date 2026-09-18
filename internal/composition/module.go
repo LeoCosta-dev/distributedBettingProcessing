@@ -21,49 +21,57 @@ import (
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/keycloak"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/postgres"
 	sqsinfrastructure "github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/sqs"
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/observability"
 	transporthttp "github.com/leonardodacosta/distributedBettingProcessing/internal/transport/http"
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/transport/messaging"
 )
 
 // Module is the single Fx module of the API process.
 func Module() fx.Option {
-	return fx.Module("api",
-		fx.Provide(
-			config.Load,
-			newLogger,
-			newDatabase,
-			newSQSClient,
-			newAuthenticator,
-			// The financial and read services are exposed to the transport only
-			// through their use case interfaces, keeping the adapter free of
-			// application implementation details.
-			fx.Annotate(
-				financial.NewService,
-				fx.As(new(transporthttp.FinancialUseCases)),
-				fx.As(new(messaging.Processor)),
+	return fx.Options(
+		fx.Module("api",
+			fx.Provide(
+				config.Load,
+				newLogger,
+				observability.NewMetrics,
+				newDatabase,
+				newSQSClient,
+				newAuthenticator,
+				// The financial and read services are exposed to the transport only
+				// through their use case interfaces, keeping the adapter free of
+				// application implementation details.
+				fx.Annotate(
+					newFinancialService,
+					fx.As(new(transporthttp.FinancialUseCases)),
+					fx.As(new(messaging.Processor)),
+				),
+				fx.Annotate(query.NewService, fx.As(new(transporthttp.QueryUseCases))),
+				fx.Annotate(
+					postgres.NewPostgresChecker,
+					fx.As(new(transporthttp.Checker)),
+					fx.ResultTags(`group:"health_checkers"`),
+				),
+				fx.Annotate(
+					newSQSChecker,
+					fx.As(new(transporthttp.Checker)),
+					fx.ResultTags(`group:"health_checkers"`),
+				),
+				fx.Annotate(
+					newHealthRegistry,
+					fx.ParamTags(`group:"health_checkers"`),
+				),
+				newSQSConsumer,
+				newReferenceWorker,
+				newOutboxWorker,
+				newRouter,
+				newHTTPServer,
 			),
-			fx.Annotate(query.NewService, fx.As(new(transporthttp.QueryUseCases))),
-			fx.Annotate(
-				postgres.NewPostgresChecker,
-				fx.As(new(transporthttp.Checker)),
-				fx.ResultTags(`group:"health_checkers"`),
-			),
-			fx.Annotate(
-				newSQSChecker,
-				fx.As(new(transporthttp.Checker)),
-				fx.ResultTags(`group:"health_checkers"`),
-			),
-			fx.Annotate(
-				newHealthRegistry,
-				fx.ParamTags(`group:"health_checkers"`),
-			),
-			newSQSConsumer,
-			newReferenceWorker,
-			newOutboxWorker,
-			transporthttp.NewRouter,
-			newHTTPServer,
+			fx.Invoke(registerLifecycle),
 		),
-		fx.Invoke(registerLifecycle),
+		// Application logs use slog's JSON handler. Fx lifecycle diagnostics are
+		// intentionally suppressed so the operational stream remains one JSON
+		// record per line; this does not alter lifecycle hooks.
+		fx.NopLogger,
 	)
 }
 
@@ -98,27 +106,34 @@ func newHealthRegistry(checkers []transporthttp.Checker) *transporthttp.HealthRe
 	return transporthttp.NewHealthRegistry(checkers...)
 }
 
-func newSQSConsumer(client *sqsinfrastructure.Client, processor messaging.Processor, cfg config.Config, logger *slog.Logger) *messaging.Consumer {
+func newFinancialService(db *postgres.Repository, metrics *observability.Metrics) *financial.Service {
+	return financial.NewService(db, metrics)
+}
+
+func newSQSConsumer(client *sqsinfrastructure.Client, processor messaging.Processor, cfg config.Config, logger *slog.Logger, metrics *observability.Metrics) *messaging.Consumer {
 	return messaging.NewConsumer(client, processor, messaging.Config{
 		ConsumerName:           "wager-transaction-consumer",
 		VisibilityTimeout:      cfg.SQSVisibilityTimeout,
 		WaitTime:               cfg.SQSWaitTime,
 		MaxMessages:            cfg.SQSMaxMessages,
+		MaxReceiveCount:        cfg.SQSMaxReceiveCount,
 		RetryVisibilityBackoff: cfg.SQSRetryVisibilityBackoff,
 		Logger:                 logger,
+		Metrics:                metrics,
 	})
 }
 
-func newReferenceWorker(db *postgres.Repository, cfg config.Config, logger *slog.Logger) *financial.ReferenceWorker {
-	return financial.NewReferenceWorker(financial.NewService(db), financial.ReferenceWorkerConfig{
+func newReferenceWorker(db *postgres.Repository, cfg config.Config, logger *slog.Logger, metrics *observability.Metrics) *financial.ReferenceWorker {
+	return financial.NewReferenceWorker(financial.NewService(db, metrics), financial.ReferenceWorkerConfig{
 		PollInterval: cfg.ReferencePollInterval,
 		MaxAttempts:  cfg.ReferenceMaxAttempts,
 		Backoff:      cfg.ReferenceBackoff,
 		Logger:       logger,
+		Metrics:      metrics,
 	})
 }
 
-func newOutboxWorker(db *postgres.Repository, client *sqsinfrastructure.Client, cfg config.Config, logger *slog.Logger) *outbox.Worker {
+func newOutboxWorker(db *postgres.Repository, client *sqsinfrastructure.Client, cfg config.Config, logger *slog.Logger, metrics *observability.Metrics) *outbox.Worker {
 	if !cfg.OutboxEnabled {
 		return nil
 	}
@@ -129,11 +144,16 @@ func newOutboxWorker(db *postgres.Repository, client *sqsinfrastructure.Client, 
 		Backoff:      cfg.OutboxBackoff,
 		ClaimLease:   cfg.OutboxClaimLease,
 		Logger:       logger,
+		Metrics:      metrics,
 	})
 }
 
 func newHTTPServer(cfg config.Config, router *transporthttp.Router, logger *slog.Logger) *transporthttp.Server {
 	return transporthttp.NewServer(cfg.HTTPAddr, router.Handler(), logger)
+}
+
+func newRouter(financial transporthttp.FinancialUseCases, queries transporthttp.QueryUseCases, health *transporthttp.HealthRegistry, authenticator transporthttp.Authenticator, logger *slog.Logger, metrics *observability.Metrics) *transporthttp.Router {
+	return transporthttp.NewRouter(financial, queries, health, authenticator, logger, metrics)
 }
 
 // registerLifecycle defines the shutdown order explicitly.

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/leonardodacosta/distributedBettingProcessing/internal/infrastructure/postgres"
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/observability"
 )
 
 type EventPublisher interface {
@@ -24,6 +25,7 @@ type Config struct {
 	Backoff      time.Duration
 	ClaimLease   time.Duration
 	Logger       *slog.Logger
+	Metrics      *observability.Metrics
 }
 
 type Worker struct {
@@ -101,6 +103,7 @@ func (w *Worker) Stop(ctx context.Context) error {
 
 func (w *Worker) loop(ctx context.Context) {
 	for {
+		w.observeLag(ctx, time.Now().UTC())
 		processed := false
 		for index := 0; index < w.config.BatchSize; index++ {
 			handled, err := w.processOne(ctx, time.Now().UTC())
@@ -142,12 +145,37 @@ func (w *Worker) processOne(ctx context.Context, now time.Time) (bool, error) {
 	}
 	body, err := marshalEnvelope(record)
 	if err != nil {
+		w.logFailure(record, err)
 		return true, w.retry(ctx, repository, record, now, err)
 	}
 	if err := w.publisher.SendEvent(ctx, body, record.AggregateID.String(), record.EventID.String()); err != nil {
+		if w.config.Metrics != nil {
+			w.config.Metrics.ObserveRetry("outbox")
+		}
+		w.logFailure(record, err)
 		return true, w.retry(ctx, repository, record, now, err)
 	}
-	return true, repository.MarkPublished(ctx, record.EventID, record.ClaimToken, now)
+	err = repository.MarkPublished(ctx, record.EventID, record.ClaimToken, now)
+	if err == nil && w.config.Logger != nil {
+		w.config.Logger.Info("outbox event published", slog.String("eventId", record.EventID.String()), slog.String("aggregateId", record.AggregateID.String()), slog.String("correlationId", record.CorrelationID))
+	}
+	return true, err
+}
+
+func (w *Worker) logFailure(record postgres.OutboxRecord, err error) {
+	if w.config.Logger != nil {
+		w.config.Logger.Error("outbox event publication failed", slog.String("eventId", record.EventID.String()), slog.String("aggregateId", record.AggregateID.String()), slog.String("correlationId", record.CorrelationID), slog.String("error", err.Error()))
+	}
+}
+
+func (w *Worker) observeLag(ctx context.Context, now time.Time) {
+	if w.config.Metrics == nil {
+		return
+	}
+	lag, err := postgres.NewOutboxRepository(w.db).PendingLag(ctx, now)
+	if err == nil {
+		w.config.Metrics.SetOutboxLag(lag)
+	}
 }
 
 func (w *Worker) retry(ctx context.Context, repository *postgres.OutboxRepository, record postgres.OutboxRecord, now time.Time, processingErr error) error {
