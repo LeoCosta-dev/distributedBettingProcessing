@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -266,10 +267,7 @@ func TestStaleOutboxPublisherCannotMutateRecoveredClaim(t *testing.T) {
 
 func TestProductionWorkerClaimOneBlocksSameAggregateAndAllowsParallelAggregate(t *testing.T) {
 	requireProductionOutboxIntegration(t)
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("DATABASE_URL is not set")
-	}
+	databaseURL := newIsolatedOutboxTestDatabaseURL(t)
 	ctx := context.Background()
 	dbA, err := postgres.NewRepository(ctx, databaseURL)
 	if err != nil {
@@ -285,9 +283,6 @@ func TestProductionWorkerClaimOneBlocksSameAggregateAndAllowsParallelAggregate(t
 	e1 := insertOutboxTestEventForAggregate(t, dbA, aggregateA, time.Now().UTC())
 	e2 := insertOutboxTestEventForAggregate(t, dbA, aggregateA, time.Now().UTC())
 	e3 := insertOutboxTestEventForAggregate(t, dbA, aggregateB, time.Now().UTC())
-	isolationPool, isolationTx := isolateOutboxRows(t, ctx, databaseURL, e1, e2, e3)
-	defer isolationPool.Close()
-	defer isolationTx.Rollback(ctx)
 	claimTime := time.Now().UTC()
 	setOutboxNextAttempt(t, ctx, databaseURL, e2, claimTime.Add(-2*time.Minute))
 	setOutboxNextAttempt(t, ctx, databaseURL, e3, claimTime.Add(-time.Minute))
@@ -320,8 +315,9 @@ func TestProductionWorkerClaimOneBlocksSameAggregateAndAllowsParallelAggregate(t
 	}
 	e2Record, e2Err := postgres.NewOutboxRepository(dbB).FindByID(ctx, e2)
 	e3Record, e3Err := postgres.NewOutboxRepository(dbB).FindByID(ctx, e3)
-	if e2Err != nil || e3Err != nil || e2Record.OrderingID >= e3Record.OrderingID {
-		t.Fatalf("E2 was not ordered before E3: E2=%+v error=%v E3=%+v error=%v", e2Record, e2Err, e3Record, e3Err)
+	e1Record, e1Err := postgres.NewOutboxRepository(dbB).FindByID(ctx, e1)
+	if e1Err != nil || e2Err != nil || e3Err != nil || e1Record.OrderingID >= e2Record.OrderingID || e2Record.OrderingID >= e3Record.OrderingID {
+		t.Fatalf("scenario ordering = E1=%+v error=%v E2=%+v error=%v E3=%+v error=%v", e1Record, e1Err, e2Record, e2Err, e3Record, e3Err)
 	}
 	assertOutboxRowUnlocked(t, ctx, databaseURL, e2)
 	if _, err := workerB.processOne(ctx, claimTime); err != nil {
@@ -348,10 +344,7 @@ func TestProductionWorkerClaimOneBlocksSameAggregateAndAllowsParallelAggregate(t
 
 func TestProductionWorkerClaimOneRetryKeepsSuccessorBlocked(t *testing.T) {
 	requireProductionOutboxIntegration(t)
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("DATABASE_URL is not set")
-	}
+	databaseURL := newIsolatedOutboxTestDatabaseURL(t)
 	ctx := context.Background()
 	db, err := postgres.NewRepository(ctx, databaseURL)
 	if err != nil {
@@ -362,9 +355,6 @@ func TestProductionWorkerClaimOneRetryKeepsSuccessorBlocked(t *testing.T) {
 	e1 := insertOutboxTestEventForAggregate(t, db, aggregate, time.Now().UTC())
 	e2 := insertOutboxTestEventForAggregate(t, db, aggregate, time.Now().UTC())
 	e3 := insertOutboxTestEventForAggregate(t, db, uuid.New(), time.Now().UTC())
-	isolationPool, isolationTx := isolateOutboxRows(t, ctx, databaseURL, e1, e2, e3)
-	defer isolationPool.Close()
-	defer isolationTx.Rollback(ctx)
 	claimTime := time.Now().UTC()
 	setOutboxNextAttempt(t, ctx, databaseURL, e2, claimTime.Add(-2*time.Minute))
 	setOutboxNextAttempt(t, ctx, databaseURL, e3, claimTime.Add(-time.Minute))
@@ -387,6 +377,13 @@ func TestProductionWorkerClaimOneRetryKeepsSuccessorBlocked(t *testing.T) {
 	if record, err := postgres.NewOutboxRepository(db).FindByID(ctx, e2); err != nil || record.Status != "PENDING" || record.ClaimedAt != nil || !record.NextAttemptAt.Before(now) {
 		t.Fatalf("E2 was not independently eligible during retry: %+v, error=%v", record, err)
 	}
+	e1Record, e1Err := postgres.NewOutboxRepository(db).FindByID(ctx, e1)
+	e2Record, e2Err := postgres.NewOutboxRepository(db).FindByID(ctx, e2)
+	e3Record, e3Err := postgres.NewOutboxRepository(db).FindByID(ctx, e3)
+	if e1Err != nil || e2Err != nil || e3Err != nil || e1Record.OrderingID >= e2Record.OrderingID || e2Record.OrderingID >= e3Record.OrderingID {
+		t.Fatalf("retry scenario ordering = E1=%+v error=%v E2=%+v error=%v E3=%+v error=%v", e1Record, e1Err, e2Record, e2Err, e3Record, e3Err)
+	}
+	assertOutboxRowUnlocked(t, ctx, databaseURL, e2)
 	if _, err := worker.processOne(ctx, now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
@@ -402,10 +399,7 @@ func TestProductionWorkerClaimOneRetryKeepsSuccessorBlocked(t *testing.T) {
 
 func TestProductionWorkerClaimOneRecoversLeaseAndRejectsStalePublisher(t *testing.T) {
 	requireProductionOutboxIntegration(t)
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("DATABASE_URL is not set")
-	}
+	databaseURL := newIsolatedOutboxTestDatabaseURL(t)
 	ctx := context.Background()
 	dbA, err := postgres.NewRepository(ctx, databaseURL)
 	if err != nil {
@@ -420,9 +414,6 @@ func TestProductionWorkerClaimOneRecoversLeaseAndRejectsStalePublisher(t *testin
 	aggregate := uuid.New()
 	e1 := insertOutboxTestEventForAggregate(t, dbA, aggregate, time.Now().UTC())
 	e2 := insertOutboxTestEventForAggregate(t, dbA, aggregate, time.Now().UTC())
-	isolationPool, isolationTx := isolateOutboxRows(t, ctx, databaseURL, e1, e2)
-	defer isolationPool.Close()
-	defer isolationTx.Rollback(ctx)
 	setOutboxNextAttempt(t, ctx, databaseURL, e2, time.Now().UTC().Add(time.Hour))
 	setOutboxNextAttempt(t, ctx, databaseURL, e1, time.Unix(0, 0).UTC())
 	firstPublisher := &holdingPublisher{target: e1.String(), started: make(chan struct{}), release: make(chan struct{})}
@@ -546,6 +537,57 @@ func newOutboxTestDB(t *testing.T) *postgres.Repository {
 		t.Fatal(err)
 	}
 	return db
+}
+
+// newIsolatedOutboxTestDatabaseURL creates a schema-local copy of the outbox
+// table. ClaimOneRecord intentionally has global production eligibility, so
+// production-path ordering tests need a separate schema rather than row locks
+// that can miss rows inserted later by other integration-test packages.
+func newIsolatedOutboxTestDatabaseURL(t *testing.T) string {
+	t.Helper()
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := "outbox_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		admin.Close()
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(ctx, "CREATE TABLE "+schema+".outbox (LIKE public.outbox INCLUDING ALL)"); err != nil {
+		_, _ = admin.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
+		admin.Close()
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(ctx, "CREATE SEQUENCE "+schema+".outbox_ordering_seq"); err != nil {
+		_, _ = admin.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
+		admin.Close()
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(ctx, "ALTER TABLE "+schema+".outbox ALTER COLUMN ordering_id SET DEFAULT nextval('"+schema+".outbox_ordering_seq'::regclass)"); err != nil {
+		_, _ = admin.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
+		admin.Close()
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		_, _ = admin.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
+		admin.Close()
+		t.Fatal(err)
+	}
+	query := parsed.Query()
+	query.Set("search_path", schema+",public")
+	parsed.RawQuery = query.Encode()
+	t.Cleanup(func() {
+		_, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+		admin.Close()
+	})
+	return parsed.String()
 }
 
 func insertOutboxTestEvent(t *testing.T, db *postgres.Repository, now time.Time) uuid.UUID {

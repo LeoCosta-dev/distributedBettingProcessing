@@ -189,19 +189,22 @@ func TestWalletBalanceChangedWireContractAgainstRealLocalStack(t *testing.T) {
 }
 
 func TestSameAggregateOrderingAfterRealLocalStackRetry(t *testing.T) {
-	databaseURL := os.Getenv("DATABASE_URL")
+	databaseURL := newIsolatedOutboxTestDatabaseURL(t)
 	endpoint := os.Getenv("AWS_ENDPOINT_URL")
-	if databaseURL == "" || endpoint == "" {
-		t.Skip("DATABASE_URL and AWS_ENDPOINT_URL are required")
+	if endpoint == "" {
+		t.Skip("AWS_ENDPOINT_URL is required")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	db := newOutboxTestDB(t)
+	db, err := postgres.NewRepository(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer db.Close()
 	aggregateID := uuid.New()
 	e1 := insertOutboxTestEventForAggregate(t, db, aggregateID, time.Now().UTC())
 	e2 := insertOutboxTestEventForAggregate(t, db, aggregateID, time.Now().UTC())
-	client, err := sqsinfrastructure.NewClient(ctx, config.Config{AWSRegion: "us-east-1", AWSEndpointURL: endpoint, AWSAccessKeyID: "test", AWSSecretAccessKey: "test", SQSEventQueue: "wager-events.fifo"})
+	client, err := newIsolatedOutboxSQSClient(t, ctx, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,24 +253,32 @@ func TestSameAggregateOrderingAfterRealLocalStackRetry(t *testing.T) {
 
 func TestProductionWorkerClaimOneOrderingAfterRealLocalStackRetry(t *testing.T) {
 	requireProductionOutboxIntegration(t)
-	databaseURL := os.Getenv("DATABASE_URL")
+	databaseURL := newIsolatedOutboxTestDatabaseURL(t)
 	endpoint := os.Getenv("AWS_ENDPOINT_URL")
-	if databaseURL == "" || endpoint == "" {
-		t.Skip("DATABASE_URL and AWS_ENDPOINT_URL are required")
+	if endpoint == "" {
+		t.Skip("AWS_ENDPOINT_URL is required")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
-	db := newOutboxTestDB(t)
+	db, err := postgres.NewRepository(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer db.Close()
 	aggregateID := uuid.New()
 	e1 := insertOutboxTestEventForAggregate(t, db, aggregateID, time.Now().UTC())
 	e2 := insertOutboxTestEventForAggregate(t, db, aggregateID, time.Now().UTC())
-	isolationPool, isolationTx := isolateOutboxRows(t, ctx, databaseURL, e1, e2)
-	defer isolationPool.Close()
-	defer isolationTx.Rollback(ctx)
 	setOutboxNextAttempt(t, ctx, databaseURL, e1, time.Unix(0, 0).UTC())
-	setOutboxNextAttempt(t, ctx, databaseURL, e2, time.Now().UTC().Add(-time.Minute))
-	client, err := sqsinfrastructure.NewClient(ctx, config.Config{AWSRegion: "us-east-1", AWSEndpointURL: endpoint, AWSAccessKeyID: "test", AWSSecretAccessKey: "test", SQSEventQueue: "wager-events.fifo"})
+	claimTime := time.Now().UTC()
+	setOutboxNextAttempt(t, ctx, databaseURL, e2, claimTime.Add(-time.Minute))
+	repository := postgres.NewOutboxRepository(db)
+	e1Record, e1Err := repository.FindByID(ctx, e1)
+	e2Record, e2Err := repository.FindByID(ctx, e2)
+	if e1Err != nil || e2Err != nil || e1Record.OrderingID >= e2Record.OrderingID || e2Record.Status != "PENDING" || e2Record.ClaimedAt != nil || !e2Record.NextAttemptAt.Before(claimTime) {
+		t.Fatalf("E2 was not independently eligible for LocalStack ordering: E1=%+v error=%v E2=%+v error=%v", e1Record, e1Err, e2Record, e2Err)
+	}
+	assertOutboxRowUnlocked(t, ctx, databaseURL, e2)
+	client, err := newIsolatedOutboxSQSClient(t, ctx, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,4 +331,33 @@ func TestProductionWorkerClaimOneOrderingAfterRealLocalStackRetry(t *testing.T) 
 	if len(seen) != 2 || seen[0] != e1.String() || seen[1] != e2.String() {
 		t.Fatalf("ClaimOneRecord same-aggregate broker order = %v, want [%s %s]", seen, e1, e2)
 	}
+}
+
+func newIsolatedOutboxSQSClient(t *testing.T, ctx context.Context, endpoint string) (*sqsinfrastructure.Client, error) {
+	t.Helper()
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion("us-east-1"), awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "")))
+	if err != nil {
+		return nil, err
+	}
+	awsCfg.BaseEndpoint = aws.String(endpoint)
+	api := awssqs.NewFromConfig(awsCfg)
+	queueName := "outbox-test-" + uuid.NewString() + ".fifo"
+	created, err := api.CreateQueue(ctx, &awssqs.CreateQueueInput{
+		QueueName: aws.String(queueName),
+		Attributes: map[string]string{
+			"FifoQueue":                 "true",
+			"ContentBasedDeduplication": "false",
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	t.Cleanup(func() {
+		if created.QueueUrl != nil {
+			_, _ = api.DeleteQueue(context.Background(), &awssqs.DeleteQueueInput{QueueUrl: created.QueueUrl})
+		}
+	})
+	return sqsinfrastructure.NewClient(ctx, config.Config{
+		AWSRegion: "us-east-1", AWSEndpointURL: endpoint, AWSAccessKeyID: "test", AWSSecretAccessKey: "test", SQSEventQueue: queueName,
+	})
 }
