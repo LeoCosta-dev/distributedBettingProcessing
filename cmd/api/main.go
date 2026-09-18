@@ -1,7 +1,11 @@
 package main
 
-import "go.uber.org/fx"
+import (
+	"go.uber.org/fx"
+
+	"github.com/leonardodacosta/distributedBettingProcessing/internal/composition"
+)
 
 func main() {
-	fx.New().Run()
+	fx.New(composition.Module()).Run()
 }

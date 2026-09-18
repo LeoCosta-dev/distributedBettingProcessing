@@ -48,6 +48,9 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
       KC_HEALTH_ENABLED: "true"
+      # Pins the issuer identity so the iss claim is deterministic and equal to
+      # OIDC_ISSUER, while the JWKS endpoint can still be reached internally.
+      KC_HOSTNAME: ${KEYCLOAK_HOSTNAME:-http://localhost:8082}
     ports:
       - "${KEYCLOAK_PORT:-8082}:8080"
     volumes:
@@ -81,9 +84,16 @@ services:
 
       KEYCLOAK_BASE_URL: http://keycloak:8080
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-wagering}
-      KEYCLOAK_ISSUER_URL: http://keycloak:8080/realms/${KEYCLOAK_REALM:-wagering}
+      KEYCLOAK_ISSUER_URL: ${KEYCLOAK_ISSUER_URL:-http://localhost:8082/realms/wagering}
       OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID:-wagering-api}
       OAUTH_CLIENT_SECRET: ${OAUTH_CLIENT_SECRET:-change-me}
+
+      # Token validation: the issuer must match the iss claim exactly, while the
+      # JWKS endpoint is reached through the internal container address.
+      OIDC_ISSUER: ${OIDC_ISSUER:-http://localhost:8082/realms/wagering}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-http://keycloak:8080/realms/wagering/protocol/openid-connect/certs}
+      OAUTH_AUDIENCE: ${OAUTH_AUDIENCE:-wagering-api}
+      HTTP_SHUTDOWN_TIMEOUT: ${HTTP_SHUTDOWN_TIMEOUT:-10s}
 
       SQS_VISIBILITY_TIMEOUT_SECONDS: ${SQS_VISIBILITY_TIMEOUT_SECONDS:-30}
       SQS_MAX_RECEIVE_COUNT: ${SQS_MAX_RECEIVE_COUNT:-5}

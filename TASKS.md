@@ -219,29 +219,31 @@ Prove correctness across independent application processes.
 
 Expose the financial use cases through HTTP.
 
+Current Status: COMPLETE — APPROVED
+
 ### Tasks
 
-* [ ] HTTP server
-* [ ] authentication middleware
-* [ ] authorization middleware
-* [ ] POST /wallets
-* [ ] GET /wallets/:walletId
-* [ ] GET /wallets/:walletId/ledger
-* [ ] POST /wagering/transactions
-* [ ] GET /wagering/transactions/:transactionId
-* [ ] GET /providers/:providerId/wagering/transactions/:externalTransactionId
-* [ ] POST /wallets/:walletId/reconciliation
-* [ ] GET /health/live
-* [ ] GET /health/ready
-* [ ] HTTP error contract
+* [x] HTTP server
+* [x] authentication middleware
+* [x] authorization middleware
+* [x] POST /wallets
+* [x] GET /wallets/:walletId
+* [x] GET /wallets/:walletId/ledger
+* [x] POST /wagering/transactions
+* [x] GET /wagering/transactions/:transactionId
+* [x] GET /providers/:providerId/wagering/transactions/:externalTransactionId
+* [x] POST /wallets/:walletId/reconciliation
+* [x] GET /health/live
+* [x] GET /health/ready
+* [x] HTTP error contract
 
 ### Verification
 
-* [ ] authentication tests
-* [ ] authorization isolation tests
-* [ ] invalid input tests
-* [ ] replay tests
-* [ ] HTTP integration tests
+* [x] authentication tests
+* [x] authorization isolation tests
+* [x] invalid input tests
+* [x] replay tests
+* [x] HTTP integration tests
 
 ---
 
@@ -446,13 +448,13 @@ Documentation
 # Current Loop
 
 ```text
-Loop 5 — Concurrency
+Loop 6 — HTTP
 ```
 
 # Current Status
 
 ```text
-IMPLEMENTED — PENDING HUMAN REVIEW
+COMPLETE — APPROVED
 ```
 
 # Rules

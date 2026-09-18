@@ -49,3 +49,13 @@ See `SPEC.md`.
 ## Implementation Progress
 
 See `TASKS.md`.
+
+## License
+
+This project is provided exclusively for technical evaluation,
+recruitment, interview, and portfolio review purposes.
+
+Production, commercial, redistribution, and derivative use is not
+authorized without prior written permission from the copyright holder.
+
+See [LICENSE](LICENSE).

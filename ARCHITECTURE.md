@@ -921,6 +921,65 @@ Alternatives:
 Consequences:
 ```
 
+## ADR-006 — Loop 6 HTTP and OIDC integration decisions
+
+Status: APPROVED FOR LOOP 6 IMPLEMENTATION
+Date: 2026-09-17
+
+Context:
+
+Loop 6 needs transport, identity, lifecycle and read-model decisions before
+its implementation can be reviewed. The normative SPEC was restored before
+these choices were made and intentionally retains the corresponding open
+specification gaps.
+
+Decision:
+
+The following decisions were made later by the human Loop 6 review and are
+adopted by the current implementation:
+
+* HTTP uses JSON. Money is represented on the wire as
+  `{ "amount": "25.00", "currency": "BRL" }`.
+* HTTP errors use `{ "error": { "code": "...", "message": "..." } }`.
+  `REJECTED` and `PENDING_REFERENCE` are HTTP 200 outcomes; wallet creation
+  returns 201 and a duplicate wallet returns 409 with
+  `WALLET_ALREADY_EXISTS`.
+* External wagering requests use the `Idempotency-Key` header. The
+  `idempotentReplay` indicator is returned only by POST wagering transactions
+  and is inferred from the returned transaction identity.
+* The provider identity comes exclusively from the authenticated
+  `provider_id` claim. Provider and internal roles are named `provider` and
+  `internal`, and the configured audience is `wagering-api`.
+* Provider routes require the `provider` role and `provider_id`; wallet,
+  administration and audit routes require `internal`. Provider-scoped reads
+  filter `provider_id` in SQL. Health routes are public.
+* Ledger reads use an opaque keyset cursor ordered by `(timestamp, id)`, with
+  default limit 50, maximum limit 100 and a `limit+1` query; OFFSET is not
+  used.
+* Liveness performs no dependency check. Loop 6 readiness checks PostgreSQL
+  only; SQS readiness is deferred to Loop 7.
+* OIDC uses go-oidc with real JWKS and RS256, with strict issuer, audience,
+  signature, `exp` and `nbf` validation. Issuer and JWKS URLs may use
+  different network endpoints, provided they identify the same realm.
+* HTTP shutdown drains in-flight requests using a configurable ten-second
+  default before closing dependencies.
+* Internal wallet opening requires `openingBalance`; `0.00` creates a wallet
+  without a financial movement. Reconciliation is internal and read-only.
+
+Provenance:
+
+These are later human decisions for the Loop 6 implementation, not
+requirements originally recovered from the challenge or silently restored
+into SPEC.md. The related Open Specification Gaps remain preserved in
+SPEC.md; this ADR records the selected implementation decisions and their
+scope for review.
+
+Consequences:
+
+The Loop 6 adapters and composition may be reviewed against this ADR. It does
+not authorize SQS, inbox processing or outbox workers, which remain Loop 7
+scope, and it does not change the frozen financial core.
+
 ---
 
 # 35. Current Status
