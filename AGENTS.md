@@ -1,54 +1,60 @@
 # AGENTS.md
 
-## Project
+## Projeto
 
-Backend challenge for distributed wagering transaction processing.
+Desafio de backend para processamento distribuído de transações de apostas.
 
-The system is a financial backend. Correctness, consistency, idempotency and failure recovery have priority over implementation speed or abstraction complexity.
+O sistema é um backend financeiro. Correção, consistência, idempotência e
+recuperação de falhas têm prioridade sobre velocidade de implementação ou
+complexidade de abstração.
 
-## Engineering Principles
+## Princípios de engenharia
 
-1. Preserve financial correctness above all other concerns.
-2. Prefer explicit and verifiable behavior over clever abstractions.
-3. Keep domain logic independent from HTTP, SQS, PostgreSQL, Keycloak and Uber Fx.
-4. Infrastructure adapters must not contain business rules.
-5. Financial invariants must be enforced both by application logic and PostgreSQL constraints where applicable.
-6. Do not introduce dependencies unless they provide clear value.
-7. Do not implement speculative features outside the challenge requirements.
-8. Keep changes small and independently verifiable.
+1. Preserve a correção financeira acima de tudo.
+2. Prefira comportamento explícito e verificável a abstrações engenhosas.
+3. Mantenha a lógica de domínio independente de HTTP, SQS, PostgreSQL,
+   Keycloak e Uber Fx.
+4. Adapters de infraestrutura não devem conter regras de negócio.
+5. Invariantes financeiras devem ser impostas tanto pela lógica da aplicação
+   quanto por constraints do PostgreSQL quando aplicável.
+6. Não introduza dependências a menos que forneçam valor claro.
+7. Não implemente funcionalidades especulativas fora dos requisitos do
+   desafio.
+8. Mantenha as mudanças pequenas e verificáveis de forma independente.
 
-## Financial Rules
+## Regras financeiras
 
-Never:
+Nunca:
 
-* use `float32` or `float64` for monetary values;
-* silently round invalid monetary input;
-* mutate or delete ledger entries;
-* update wallet balance outside the financial database transaction;
-* rely on in-memory state for idempotency;
-* rely on SQS FIFO deduplication as the financial idempotency mechanism;
-* use process-local locks as the financial concurrency mechanism;
-* publish an integration event before the originating database transaction commits;
-* allow a wallet balance to become negative;
-* allow a processed financial transaction to be applied twice;
-* allow two successful reversals of the same applicable type;
-* bypass domain validation from an adapter.
+* use `float32` ou `float64` para valores monetários;
+* faça rounding silencioso de entrada monetária inválida;
+* altere ou apague entradas do ledger;
+* atualize o saldo da wallet fora da transação financeira do banco;
+* dependa de estado em memória para idempotência;
+* dependa da deduplicação FIFO do SQS como mecanismo de idempotência
+  financeira;
+* use locks locais do processo como mecanismo de concorrência financeira;
+* publique um evento de integração antes do commit da transação de origem;
+* permita que o saldo de uma wallet fique negativo;
+* permita que uma transação financeira processada seja aplicada duas vezes;
+* permita duas reversões bem-sucedidas do mesmo tipo aplicável;
+* ignore a validação de domínio em um adapter.
 
 ## Money
 
-Money must:
+Money deve:
 
-* use exact arithmetic;
-* carry both amount and currency;
-* use fixed two-decimal external representation;
-* reject negative external financial inputs;
-* reject scientific notation;
-* reject excessive scale;
-* reject invalid numeric representations;
-* reject arithmetic between incompatible currencies;
-* detect integer overflow when `int64` is used.
+* usar aritmética exata;
+* carregar amount e currency;
+* usar representação externa fixa com duas casas decimais;
+* rejeitar entradas financeiras externas negativas;
+* rejeitar notação científica;
+* rejeitar escala excessiva;
+* rejeitar representações numéricas inválidas;
+* rejeitar aritmética entre currencies incompatíveis;
+* detectar overflow de inteiro quando `int64` for usado.
 
-The external representation is:
+A representação externa é:
 
 ```json
 {
@@ -59,116 +65,128 @@ The external representation is:
 
 ## Wallet
 
-Wallet is the financial aggregate root.
+Wallet é a raiz do aggregate financeiro.
 
-Balance mutations must be performed atomically with their corresponding ledger entry and transaction state.
+As mutações de saldo devem ser realizadas atomicamente com a entrada
+correspondente do ledger e o estado da transação.
 
-Wallet concurrency must be coordinated at wallet scope.
+A concorrência da wallet deve ser coordenada no escopo da wallet.
 
-Independent wallets must be able to progress concurrently.
+Wallets independentes devem poder progredir concorrentemente.
 
 ## Ledger
 
-The ledger is append-only.
+O ledger é append-only.
 
-Every effective balance mutation must produce exactly one corresponding ledger entry.
+Toda mutação efetiva de saldo deve produzir exatamente uma entrada
+correspondente no ledger.
 
-Ledger entries are immutable.
+As entradas do ledger são imutáveis.
 
-Corrections must create new financial entries instead of modifying previous entries.
+Correções devem criar novas entradas financeiras em vez de modificar entradas
+anteriores.
 
-## Idempotency
+## Idempotência
 
-Idempotency must survive process restarts.
+A idempotência deve sobreviver a restarts do processo.
 
-The application must distinguish:
+A aplicação deve distinguir:
 
-1. same idempotency key + same business payload;
-2. same idempotency key + different business payload;
-3. same external transaction identity + different idempotency key.
+1. mesma chave de idempotência + mesmo payload de negócio;
+2. mesma chave de idempotência + payload de negócio diferente;
+3. mesma identidade de transação externa + chave de idempotência diferente.
 
-A successful replay must return the persisted result of the original processing.
+Um replay bem-sucedido deve retornar o resultado persistido do processamento
+original.
 
-Do not reconstruct the replay response from the wallet's current balance.
+Não reconstrua a resposta de replay a partir do saldo atual da wallet.
 
-## Transactions
+## Transações
 
-Financial changes must use explicit PostgreSQL transactions.
+Alterações financeiras devem usar transações explícitas do PostgreSQL.
 
-The transaction boundary must be visible in the repository/application implementation.
+A fronteira transacional deve estar visível na implementação do repository ou
+da aplicação.
 
-Where applicable, the following must commit atomically:
+Quando aplicável, os itens a seguir devem fazer commit atomicamente:
 
-* wager transaction state;
-* wallet balance;
-* ledger entry;
-* inbox completion;
-* outbox event creation.
+* estado da wager transaction;
+* saldo da wallet;
+* entrada do ledger;
+* conclusão do inbox;
+* criação do evento de outbox.
 
-## HTTP and SQS
+## HTTP e SQS
 
-HTTP and SQS must use the same application use case for financial processing.
+HTTP e SQS devem usar o mesmo use case da aplicação para processamento
+financeiro.
 
-Transport-specific code must translate input into application commands and must not duplicate financial rules.
+Código específico de transporte deve traduzir a entrada em comandos da
+aplicação e não deve duplicar regras financeiras.
 
 ## Inbox
 
-SQS message processing must use durable inbox records.
+O processamento de mensagens SQS deve usar registros duráveis de inbox.
 
-Inbox uniqueness must be enforced by PostgreSQL.
+A unicidade do inbox deve ser imposta pelo PostgreSQL.
 
-A duplicate message must not cause the financial operation to execute again.
+Uma mensagem duplicada não deve fazer a operação financeira executar
+novamente.
 
 ## Outbox
 
-Integration events must be created transactionally with the state they describe.
+Eventos de integração devem ser criados transacionalmente com o estado que
+descrevem.
 
-Outbox publication happens asynchronously after commit.
+A publicação do outbox ocorre de forma assíncrona após o commit.
 
-The outbox worker must support:
+O worker do outbox deve suportar:
 
-* multiple workers/instances;
-* record claiming;
+* múltiplos workers/instâncias;
+* claiming de registros;
 * retries;
 * backoff;
-* recovery of abandoned work;
-* stable event IDs.
+* recovery de trabalho abandonado;
+* event IDs estáveis.
 
-## Concurrency
+## Concorrência
 
-The implementation must work with multiple independent application processes.
+A implementação deve funcionar com múltiplos processos independentes da
+aplicação.
 
-The required scenario is:
+O cenário exigido é:
 
-* wallet balance: `100.00 BRL`;
-* two different `BET` operations;
-* both amount `80.00 BRL`;
-* submitted concurrently.
+* saldo da wallet: `100.00 BRL`;
+* duas operações `BET` diferentes;
+* ambas no valor de `80.00 BRL`;
+* submetidas concorrentemente.
 
-Expected result:
+Resultado esperado:
 
-* exactly one transaction is `PROCESSED`;
-* exactly one transaction is rejected for insufficient balance;
-* final balance is `20.00 BRL`;
-* exactly one debit exists in the ledger.
+* exatamente uma transação é `PROCESSED`;
+* exatamente uma transação é rejeitada por saldo insuficiente;
+* saldo final é `20.00 BRL`;
+* existe exatamente um débito no ledger.
 
-The implementation must not depend on Go process memory to guarantee this result.
+A implementação não deve depender da memória do processo Go para garantir
+esse resultado.
 
-## Authentication and Authorization
+## Autenticação e autorização
 
-Business endpoints require real OAuth 2.0/OIDC authentication.
+Endpoints de negócio exigem autenticação OAuth 2.0/OIDC real.
 
-The authenticated identity determines the authorized `providerId`.
+A identidade autenticada determina o `providerId` autorizado.
 
-A provider must not access another provider's transactions, including replays.
+Um provider não deve acessar transações de outro provider, inclusive replays.
 
-Internal wallet-opening operations must not be exposed as provider operations.
+Operações internas de abertura de wallet não devem ser expostas como
+operações de provider.
 
-Never implement password storage or custom token issuance.
+Nunca implemente armazenamento de senha ou emissão customizada de tokens.
 
 ## Uber Fx
 
-Use Uber Fx for application composition and lifecycle management.
+Use Uber Fx para composição da aplicação e gerenciamento de lifecycle.
 
 Use:
 
@@ -178,85 +196,89 @@ Use:
 * constructors;
 * `fx.Lifecycle`.
 
-The domain must not import Uber Fx.
+O domínio não deve importar Uber Fx.
 
-## Context and Errors
+## Context e erros
 
-All I/O operations must receive `context.Context`.
+Todas as operações de I/O devem receber `context.Context`.
 
-Respect cancellation and timeouts.
+Respeite cancelamento e timeouts.
 
-Business errors must be typed or classifiable using `errors.Is` / `errors.As`.
+Erros de negócio devem ser tipados ou classificáveis com `errors.Is` /
+`errors.As`.
 
-Do not use `panic` for business validation failures.
+Não use `panic` para falhas de validação de negócio.
 
-## Testing
+## Testes
 
-Tests must verify behavior, not implementation details.
+Testes devem verificar comportamento, não detalhes de implementação.
 
-Required verification includes:
+A verificação obrigatória inclui:
 
-* unit tests;
-* PostgreSQL integration tests;
-* SQS integration tests;
-* Keycloak authentication tests;
-* concurrency tests;
-* duplicate delivery;
-* HTTP/SQS equivalence;
-* outbox concurrency;
+* testes unitários;
+* testes de integração com PostgreSQL;
+* testes de integração com SQS;
+* testes de autenticação com Keycloak;
+* testes de concorrência;
+* entrega duplicada;
+* equivalência HTTP/SQS;
+* concorrência do outbox;
 * retry/recovery;
 * pending references;
-* application restart;
+* restart da aplicação;
 * `go test -race`.
 
-Do not replace PostgreSQL, SQS and the IdP entirely with mocks in integration tests.
+Não substitua integralmente PostgreSQL, SQS e o IdP por mocks nos testes de
+integração.
 
-## Development Workflow
+## Fluxo de desenvolvimento
 
-Work in small vertical slices.
+Trabalhe em slices verticais pequenos.
 
-For each slice:
+Para cada slice:
 
-1. inspect the existing specification;
-2. identify the relevant invariant;
-3. implement the smallest coherent change;
-4. add or update verification;
-5. run formatting and relevant tests;
-6. inspect failures;
-7. fix the root cause;
-8. update documentation if an architectural decision changed;
-9. only then move to the next slice.
+1. inspecione a especificação existente;
+2. identifique a invariante relevante;
+3. implemente a menor mudança coerente;
+4. adicione ou atualize a verificação;
+5. execute formatação e testes relevantes;
+6. inspecione as falhas;
+7. corrija a causa raiz;
+8. atualize a documentação se uma decisão arquitetural mudou;
+9. somente então avance para o próximo slice.
 
-Do not implement unrelated improvements while working on a slice.
+Não implemente melhorias não relacionadas enquanto trabalha em um slice.
 
-## Definition of Done
+## Definição de concluído
 
-A feature is not considered complete merely because the code compiles.
+Uma feature não é considerada completa apenas porque o código compila.
 
-A slice is complete when:
+Um slice está completo quando:
 
-* implementation exists;
-* relevant invariants are enforced;
-* relevant tests exist;
-* tests pass;
-* race-sensitive code has been considered;
-* documentation is updated where necessary;
-* no known requirement is silently ignored.
+* a implementação existe;
+* as invariantes relevantes são impostas;
+* existem testes relevantes;
+* os testes passam;
+* código sensível a race foi considerado;
+* a documentação foi atualizada quando necessário;
+* nenhum requisito conhecido foi ignorado silenciosamente.
 
-## Agent Behavior
+## Comportamento do agente
 
-Before making a significant architectural change:
+Antes de uma mudança arquitetural significativa:
 
-* inspect `SPEC.md`;
-* inspect `ARCHITECTURE.md`;
-* inspect `TASKS.md`;
-* explain the intended change briefly;
-* verify that it does not violate an existing decision.
+* inspecione `SPEC.md`;
+* inspecione `ARCHITECTURE.md`;
+* inspecione `TASKS.md`;
+* explique brevemente a mudança pretendida;
+* verifique que ela não viola uma decisão existente.
 
-If requirements conflict, do not silently choose one. Record the conflict in `TASKS.md` or `ARCHITECTURE.md` and resolve it explicitly.
+Se requisitos entrarem em conflito, não escolha silenciosamente. Registre o
+conflito em `TASKS.md` ou `ARCHITECTURE.md` e resolva-o explicitamente.
 
-Do not rewrite working code merely for stylistic preference.
+Não reescreva código funcional apenas por preferência de estilo.
 
-Do not add abstractions without a concrete use case.
+Não adicione abstrações sem um caso de uso concreto.
 
-Do not claim a guarantee is implemented unless there is a test or a database constraint that demonstrates it.
+Não alegue que uma garantia está implementada sem um teste ou constraint de
+banco de dados que a demonstre.

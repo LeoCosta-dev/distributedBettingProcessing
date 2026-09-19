@@ -1,67 +1,67 @@
-# Implementation Tasks
+# Tarefas de implementação
 
-This file is the working state of the implementation.
+Este arquivo registra o estado de trabalho da implementação.
 
-The project follows an iterative engineering loop:
+O projeto segue um loop iterativo de engenharia:
 
 ```text
 SPEC
   ↓
-PLAN
+PLANEJAR
   ↓
-IMPLEMENT
+IMPLEMENTAR
   ↓
-VERIFY
+VERIFICAR
   ↓
-FIND GAPS
+ENCONTRAR GAPS
   ↓
-FIX
+CORRIGIR
   ↓
-DOCUMENT
+DOCUMENTAR
   ↓
-NEXT LOOP
+PRÓXIMO LOOP
 ```
 
 ---
 
-# Loop 0 — Project Foundation
+# Loop 0 — Fundação do projeto
 
-## Goal
+## Objetivo
 
-Establish the repository structure and local development environment.
+Estabelecer a estrutura do repositório e o ambiente local de desenvolvimento.
 
-### Tasks
+### Tarefas
 
-* [x] Create project structure
-* [x] Initialize Go module
-* [x] Configure Go version
-* [x] Create Docker Compose
+* [x] Criar estrutura do projeto
+* [x] Inicializar módulo Go
+* [x] Configurar versão do Go
+* [x] Criar Compose
 * [x] Configure PostgreSQL
 * [x] Configure LocalStack
 * [x] Configure Keycloak
-* [x] Create `.env.example`
-* [x] Create Makefile
-* [x] Create migration structure
-* [x] Verify clean startup
+* [x] Criar `.env.example`
+* [x] Criar Makefile
+* [x] Criar estrutura de migrations
+* [x] Verificar startup limpo
 
-### Verification
+### Verificação
 
 * [x] `docker compose up --build`
-* [x] PostgreSQL reachable
-* [x] LocalStack reachable
-* [x] Keycloak reachable
-* [x] application starts
-* [x] application shuts down cleanly
+* [x] PostgreSQL acessível
+* [x] LocalStack acessível
+* [x] Keycloak acessível
+* [x] aplicação inicia
+* [x] aplicação encerra de forma limpa
 
 ---
 
-# Loop 1 — Domain Foundation
+# Loop 1 — Fundação do domínio
 
-## Goal
+## Objetivo
 
-Implement exact financial domain behavior without infrastructure dependencies.
+Implementar o comportamento financeiro exato do domínio sem dependências de infraestrutura.
 
-### Tasks
+### Tarefas
 
 * [x] Money value object
 * [x] Money parsing
@@ -69,82 +69,82 @@ Implement exact financial domain behavior without infrastructure dependencies.
 * [x] Money arithmetic
 * [x] Currency validation
 * [x] Overflow protection
-* [x] Wallet aggregate
-* [x] Wallet creation
-* [x] Wallet debit
-* [x] Wallet credit
+* [x] Aggregate Wallet
+* [x] Criação de Wallet
+* [x] Débito de Wallet
+* [x] Crédito de Wallet
 * [x] WagerTransaction
 * [x] WalletLedgerEntry
 * [x] Domain errors
-* [x] Transaction state machine
+* [x] máquina de estados da transação
 
-### Verification
+### Verificação
 
 * [x] Money unit tests
-* [x] Wallet invariant tests
-* [x] Transaction transition tests
-* [x] Operation rule tests
+* [x] Testes das invariantes de Wallet
+* [x] Testes das transições de transação
+* [x] Testes das regras de operação
 * [x] `go test ./...`
 
 ---
 
-# Loop 2 — Database Foundation
+# Loop 2 — Fundação do banco de dados
 
-## Goal
+## Objetivo
 
-Persist the financial model with database-enforced invariants.
+Persistir o modelo financeiro com invariantes impostas pelo banco de dados.
 
-### Tasks
+### Tarefas
 
-* [x] wallets table
-* [x] wager_transactions table
-* [x] wallet_ledger_entries table
-* [x] inbox table
-* [x] outbox table
+* [x] tabela wallets
+* [x] tabela wager_transactions
+* [x] tabela wallet_ledger_entries
+* [x] tabela inbox
+* [x] tabela outbox
 * [x] constraints
-* [x] unique indexes
-* [x] immutable ledger protection
+* [x] índices únicos
+* [x] proteção do ledger imutável
 * [x] migrations
-* [x] migration rollback
-* [x] pgx repositories
+* [x] rollback de migration
+* [x] repositories pgx
 
-### Verification
+### Verificação
 
-* [x] migrations apply
-* [x] migrations rollback
-* [x] uniqueness constraints verified
-* [x] ledger mutation rejected
-* [x] invalid balance rejected
-* [x] integration tests pass
+* [x] migrations aplicadas
+* [x] rollback de migrations
+* [x] constraints de unicidade verificadas
+* [x] mutação do ledger rejeitada
+* [x] saldo inválido rejeitado
+* [x] testes de integração passam
 
 ---
 
-# Loop 3 — Financial Processing
+# Loop 3 — Processamento financeiro
 
-## Goal
+## Objetivo
 
-Implement all financial operations atomically.
+Implementar todas as operações financeiras de forma atômica.
 
-### Tasks
+### Tarefas
 
-* [x] wallet opening
+* [x] abertura de wallet
 * [x] BET
 * [x] WIN
 * [x] LOSS
 * [x] REFUND
 * [x] ROLLBACK
-* [x] insufficient balance rejection
-* [x] reference validation
-* [x] reversal protection
-* [x] atomic balance + transaction + ledger
+* [x] rejeição por saldo insuficiente
+* [x] validação de referência
+* [x] proteção de reversão
+* [x] saldo + transação + ledger atômicos
 
-### Verification
+### Verificação
 
-* [x] financial integration tests
-* [x] ledger reconstruction
+* [x] testes de integração financeira
+* [x] reconstrução do ledger
 * [x] reconciliation
-* [x] zero-value rules
-* [x] reversal tests
+* [x] regras de valor zero
+* [x] testes de reversão
 
 > `FAILED` permanece reservado para falha permanente de infraestrutura registrada;
 > no Loop 3, falhas de infraestrutura abortam a transação. O registro/recovery
@@ -152,31 +152,31 @@ Implement all financial operations atomically.
 
 ---
 
-# Loop 4 — Idempotency
+# Loop 4 — Idempotência
 
-## Goal
+## Objetivo
 
-Guarantee persistent idempotency across instances and restarts.
+Garantir idempotência persistente entre instâncias e restarts.
 
-### Tasks
+### Tarefas
 
 * [x] Idempotency-Key
-* [x] canonical payload
-* [x] payload hashing
-* [x] duplicate detection
-* [x] same key + same payload
-* [x] same key + different payload
-* [x] same transaction + different key
-* [x] persisted original result
-* [x] replay behavior
+* [x] payload canônico
+* [x] hash do payload
+* [x] detecção de duplicatas
+* [x] mesma chave + mesmo payload
+* [x] mesma chave + payload diferente
+* [x] mesma transação + chave diferente
+* [x] resultado original persistido
+* [x] comportamento de replay
 
-### Verification
+### Verificação
 
 * [x] 50 concurrent duplicate requests
-* [x] restart application
-* [x] replay after restart
-* [x] cross-instance replay
-* [x] conflict tests
+* [x] restart da aplicação
+* [x] replay após restart
+* [x] replay entre instâncias
+* [x] testes de conflito
 
 > Registros anteriores ao Loop 4 que não possuem hash canônico compatível e
 > resultado persistido não são reprocessados; a tentativa é recusada com
@@ -184,27 +184,27 @@ Guarantee persistent idempotency across instances and restarts.
 
 ---
 
-# Loop 5 — Concurrency
+# Loop 5 — Concorrência
 
-## Goal
+## Objetivo
 
-Prove correctness across independent application processes.
+Provar corretude entre processos independentes da aplicação.
 
-### Tasks
+### Tarefas
 
-* [x] wallet row locking
-* [x] transaction boundaries
-* [x] concurrent debit protection
-* [x] lost-update prevention
-* [x] independent wallet parallelism
+* [x] locking da linha da wallet
+* [x] fronteiras de transação
+* [x] proteção contra débitos concorrentes
+* [x] prevenção de lost update
+* [x] paralelismo entre wallets independentes
 
-### Verification
+### Verificação
 
-* [x] two 80 BRL BETs against 100 BRL
-* [x] exactly one successful debit
-* [x] final balance 20 BRL
-* [x] three independent instances
-* [x] different wallets execute concurrently
+* [x] dois BETs de 80 BRL contra 100 BRL
+* [x] exatamente um débito bem-sucedido
+* [x] saldo final de 20 BRL
+* [x] três instâncias independentes
+* [x] wallets diferentes executam concorrentemente
 * [x] `go test -race`
 
 > A integração do Loop 5 inicia três executáveis independentes do binário de
@@ -215,17 +215,17 @@ Prove correctness across independent application processes.
 
 # Loop 6 — HTTP
 
-## Goal
+## Objetivo
 
-Expose the financial use cases through HTTP.
+Expor os casos de uso financeiros por HTTP.
 
-Current Status: COMPLETE — APPROVED
+Status atual: COMPLETE — APPROVED
 
-### Tasks
+### Tarefas
 
 * [x] HTTP server
-* [x] authentication middleware
-* [x] authorization middleware
+* [x] middleware de autenticação
+* [x] middleware de autorização
 * [x] POST /wallets
 * [x] GET /wallets/:walletId
 * [x] GET /wallets/:walletId/ledger
@@ -237,345 +237,346 @@ Current Status: COMPLETE — APPROVED
 * [x] GET /health/ready
 * [x] HTTP error contract
 
-### Verification
+### Verificação
 
-* [x] authentication tests
-* [x] authorization isolation tests
+* [x] testes de autenticação
+* [x] testes de isolamento de autorização
 * [x] invalid input tests
 * [x] replay tests
 * [x] HTTP integration tests
 
-### Post-Loop 6 Conformance (before Loop 7)
+### Conformidade pós-Loop 6 (antes do Loop 7)
 
-These unchecked items record primary-source contract reconciliation work. They
-do not reopen the approved Loop 6 checkpoint and are not complete in this
-document.
+Estes itens não marcados registram o trabalho de reconciliação do contrato com
+a fonte primária. Eles não reabrem o checkpoint aprovado do Loop 6 e não estão
+concluídos neste documento.
 
 * [ ] POST-LOOP-6 HTTP CONTRACT CONFORMANCE
-  * [x] reconcile request/response field names with the primary challenge
-  * [x] confirm providerId is authoritative from authenticated identity
-  * [x] reconcile the reconciliation response contract
-  * [x] transition readiness to cover PostgreSQL and SQS in Loop 7
+  * [x] reconciliar nomes de campos de request/response com o challenge primário
+  * [x] confirmar que providerId é autoritativo a partir da identidade autenticada
+  * [x] reconciliar o contrato de response de reconciliation
+  * [x] ajustar readiness para cobrir PostgreSQL e SQS no Loop 7
 
-Readiness now includes PostgreSQL and SQS through the Loop 7 composition and
-was exercised against the running local dependencies. AWS/IAM policy
-enforcement remains a deployment verification responsibility.
+Readiness agora inclui PostgreSQL e SQS por meio da composição do Loop 7 e foi
+exercitada contra as dependências locais em execução. A imposição da policy
+AWS/IAM continua sendo responsabilidade da verificação de deployment.
 
 ---
 
-# Loop 7 — SQS and Inbox
+# Loop 7 — SQS e Inbox
 
-## Goal
+## Objetivo
 
-Process financial operations through at-least-once messaging.
+Processar operações financeiras por messaging at-least-once.
 
-### Tasks
+### Tarefas
 
-* [x] FIFO queue
+* [x] fila FIFO
 * [x] DLQ
-* [x] redrive configuration
-* [x] SQS consumer
-* [x] message envelope
-* [x] message validation
+* [x] configuração de redrive
+* [x] consumer SQS
+* [x] envelope da mensagem
+* [x] validação da mensagem
 * [x] inbox
 * [x] inbox uniqueness
 * [x] SQS → application command
 * [x] retry
 * [x] visibility timeout
-* [x] graceful consumer shutdown
-* [x] queue names and FIFO/DLQ contract
-* [x] message envelope and command data fields
-* [x] messageId and payload-hash identity
-* [x] inbox transaction boundary and uniqueness
-* [x] delete only after commit
-* [x] business rejection acknowledgement
-* [x] transient retry and backoff
-* [x] malformed message handling
-* [x] DLQ and attempt limits
-* [x] SIGTERM stop polling and finish/release in-flight work
-* [x] MessageGroupId and MessageDeduplicationId policy
-* [x] HTTP/SQS application-use-case equivalence
-* [x] broker credential configuration
-* [x] minimum broker authorization policy documented
-* [ ] AWS/IAM broker-policy enforcement verification (deployment responsibility; LocalStack does not prove it)
-* [x] PostgreSQL and SQS readiness
-* [x] real PostgreSQL + LocalStack integration execution
+* [x] shutdown gracioso do consumer
+* [x] nomes das filas e contrato FIFO/DLQ
+* [x] envelope da mensagem e campos de dados do comando
+* [x] identidade por messageId e hash do payload
+* [x] fronteira transacional e unicidade da inbox
+* [x] delete somente após commit
+* [x] acknowledgement de rejeição de negócio
+* [x] retry e backoff transitórios
+* [x] tratamento de mensagens malformed
+* [x] DLQ e limites de attempts
+* [x] SIGTERM interrompe polling e finaliza/libera trabalho em andamento
+* [x] policy de MessageGroupId e MessageDeduplicationId
+* [x] equivalência do application use case HTTP/SQS
+* [x] configuração das credenciais do broker
+* [x] policy mínima de autorização do broker documentada
+* [ ] verificação da imposição da policy de broker AWS/IAM (responsabilidade de deployment; LocalStack não a comprova)
+* [x] readiness de PostgreSQL e SQS
+* [x] execução de integração real com PostgreSQL + LocalStack
 
-### Verification
+### Verificação
 
-* [x] duplicate message
-* [x] message redelivery
-* [x] commit before delete
-* [x] business rejection acknowledgement
-* [x] transient failure retry
-* [x] DLQ behavior with real broker execution
-* [x] restart recovery
-* [x] visibility and malformed-message behavior
-* [x] HTTP/SQS equivalence
-* [x] Fx consumer survives `OnStart` context completion and stops polling
-* [x] real readiness: PostgreSQL/SQS UP, each dependency DOWN, and recovery
-* [x] duplicate delivery through two real SQS consumers and separate PostgreSQL pools
+* [x] mensagem duplicada
+* [x] redelivery da mensagem
+* [x] commit antes de delete
+* [x] acknowledgement de rejeição de negócio
+* [x] retry de falha transitória
+* [x] comportamento de DLQ com execução de broker real
+* [x] recovery após restart
+* [x] comportamento de visibility e mensagem malformed
+* [x] equivalência HTTP/SQS
+* [x] consumer Fx sobrevive à conclusão do contexto de `OnStart` e interrompe o polling
+* [x] readiness real: PostgreSQL/SQS UP, cada dependência DOWN e recovery
+* [x] entrega duplicada por dois consumers SQS reais e pools PostgreSQL separados
 
-> Conditional tests remain conditional for the default local gate, but a
-> skipped test is not integration evidence. The Integration Evidence Gate in
-> `LOOPING.md` requires inspection of compatible installed runtimes and an
-> explicit real PostgreSQL/LocalStack execution before this checkpoint can be
-> marked verified. This Loop 7 correction run used the installed Podman and
-> podman-compose environment; the real tests cover FIFO topology/redrive,
-> consumer processing, durable inbox replay, delete-failure redelivery, DLQ,
-> Fx lifecycle and PostgreSQL/SQS readiness recovery. LocalStack does not
-> verify AWS IAM policy enforcement.
+> Testes condicionais continuam condicionais no gate local padrão, mas um teste
+> skipped não é evidência de integração. O Integration Evidence Gate em
+> `LOOPING.md` exige inspeção dos runtimes compatíveis instalados e execução
+> real explícita de PostgreSQL/LocalStack antes que este checkpoint possa ser
+> marcado como verificado. A rodada de correção do Loop 7 usou o ambiente
+> instalado de Podman e podman-compose; os testes reais cobrem topologia
+> FIFO/redrive, processamento do consumer, replay da inbox durável, redelivery
+> após falha de delete, DLQ, lifecycle do Fx e recovery da readiness
+> PostgreSQL/SQS. LocalStack não verifica a imposição da policy AWS IAM.
 
 ---
 
-# Loop 8 — Pending References
+# Loop 8 — Referências pendentes
 
-## Goal
+## Objetivo
 
-Recover reversals whose referenced transaction arrives later.
+Recuperar reversões cuja transação referenciada chega posteriormente.
 
-### Tasks
+### Tarefas
 
 * [x] PENDING_REFERENCE
-* [x] reference worker
-* [x] exponential backoff
-* [x] retry limit / TTL
-* [x] reference resolution
-* [x] reference expiration rejection
-* [x] restartable exponential backoff
-* [x] stable reference-not-found failureCode
-* [x] pending/unsuccessful reference behavior
+* [x] worker de referência
+* [x] backoff exponencial
+* [x] limite de retry / TTL
+* [x] resolução de referência
+* [x] rejeição por expiração da referência
+* [x] backoff exponencial reiniciável
+* [x] failureCode estável de referência não encontrada
+* [x] comportamento de referência pendente/sem sucesso
 
-### Verification
+### Verificação
 
-* [x] reversal before reference
-* [x] reference arrives later
-* [x] application restart while pending
-* [x] retry exhaustion
-* [x] pending reference event
-* [x] reference-at-exhaustion race with independent PostgreSQL pools
-* [x] multiple pending-reference workers across independent PostgreSQL pools
+* [x] reversão antes da referência
+* [x] referência chega posteriormente
+* [x] restart da aplicação enquanto pendente
+* [x] exhaustion de retry
+* [x] evento de referência pendente
+* [x] race de referência no exhaustion com pools PostgreSQL independentes
+* [x] múltiplos workers de referências pendentes com pools PostgreSQL independentes
 
-> Loop 8 uses a ten-attempt default with one-second exponential backoff.
-> `REFERENCE_REQUIRED` rejects an empty reference immediately; a non-empty
-> missing reference becomes `PENDING_REFERENCE`. Pending references survive
-> restart through PostgreSQL. Loop 9 remains responsible for publishing the
-> resulting transactional outbox rows.
+> O Loop 8 usa como padrão dez attempts com backoff exponencial de um segundo.
+> `REFERENCE_REQUIRED` rejeita imediatamente uma referência vazia; uma
+> referência ausente e não vazia torna-se `PENDING_REFERENCE`. Referências
+> pendentes sobrevivem ao restart por meio do PostgreSQL. O Loop 9 continua
+> responsável por publicar as outbox rows transacionais resultantes.
 
 ---
 
-# Loop 9 — Transactional Outbox
+# Loop 9 — Outbox transacional
 
-## Goal
+## Objetivo
 
-Guarantee durable event publication after financial commit.
+Garantir publicação durável de eventos após o commit financeiro.
 
-### Tasks
+### Tarefas
 
-* [x] outbox model
-* [x] event constructors
-* [x] immutable event payload
+* [x] modelo de outbox
+* [x] construtores de eventos
+* [x] payload imutável de evento
 * [x] event IDs
-* [x] outbox worker
-* [x] record claiming
-* [x] multiple publishers
+* [x] worker de outbox
+* [x] claiming de records
+* [x] múltiplos publishers
 * [x] retries
 * [x] backoff
-* [x] abandoned work recovery
-* [x] event destination
-* [x] atomic event creation with financial state
-* [x] required event triggers and immutable snapshots
-* [x] stable event IDs across republication
-* [x] publication/confirmation failure windows
-* [x] durable per-aggregate publication ordering
+* [x] recovery de trabalho abandonado
+* [x] destino do evento
+* [x] criação atômica do evento com o estado financeiro
+* [x] triggers de evento obrigatórios e snapshots imutáveis
+* [x] event IDs estáveis entre republicações
+* [x] janelas de falha de publicação/confirmação
+* [x] ordenação durável de publicação por aggregate
 
-### Verification
+### Verificação
 
 * [x] outbox recovery
-* [x] two publishers compete
-* [x] publication retry
-* [x] duplicate publication keeps event ID
-* [x] all required events verified
-* [x] same-aggregate ordering and independent-aggregate parallelism
+* [x] dois publishers competem
+* [x] retry de publicação
+* [x] publicação duplicada mantém o event ID
+* [x] todos os eventos obrigatórios verificados
+* [x] ordenação no mesmo aggregate e paralelismo entre aggregates independentes
 
-> Loop 9 publishes versioned immutable event envelopes to the FIFO
-> `wager-events.fifo` destination. PostgreSQL claims use a transaction-scoped
-> lease and claim token; abandoned claims are recoverable by another worker.
-> Publication ambiguity can result in repeated delivery with the same eventId.
-> Process-crash injection is verified by the controlled child-process attacks
-> documented in Loop 11.
+> O Loop 9 publica envelopes de evento versionados e imutáveis no destino FIFO
+> `wager-events.fifo`. Os claims no PostgreSQL usam lease e claim token
+> transaction-scoped; claims abandonados podem ser recuperados por outro worker.
+> A ambiguidade de publicação pode resultar em entregas repetidas com o mesmo
+> eventId. A injeção de process-crash é verificada pelos ataques controlados de
+> processos-filhos documentados no Loop 11.
 
 ---
 
-# Loop 10 — Observability
+# Loop 10 — Observabilidade
 
-## Goal
+## Objetivo
 
-Make distributed processing diagnosable.
+Tornar o processamento distribuído diagnosticável.
 
-### Tasks
+### Tarefas
 
-* [x] JSON logging
+* [x] logging JSON
 * [x] correlation ID
 * [x] transaction ID
 * [x] wallet ID
 * [x] provider ID
 * [x] message ID
-* [x] processing metrics
-* [x] duplicate metrics
-* [x] retry metrics
-* [x] receive-exhaustion/redrive-candidate metrics (broker DLQ insertion is
-  not observed by the application)
+* [x] métricas de processamento
+* [x] métricas de duplicatas
+* [x] métricas de retry
+* [x] métricas de receive-exhaustion/redrive-candidate (a inserção na DLQ do
+  broker não é observada pela aplicação)
 * [x] outbox lag
-* [x] reconciliation divergence
+* [x] divergência de reconciliation
 
-### Verification
+### Verificação
 
-* [x] logs contain required identifiers
-* [x] sensitive data is not logged
-* [x] metrics exposed
-* [x] health checks verified
-* [x] HTTP/SQS/pending-reference/outbox metric paths exercised without direct
-  collector increments
-* [x] correlation input safety and Fx JSON-only operational logging verified
-* [x] receive-exhaustion is documented as a redrive candidate, not confirmed
-  DLQ insertion
-* [x] idempotency duplicates are distinct from SQS inbox redelivery and
-  sequential idempotency conflicts are distinct from concurrency conflicts
+* [x] logs contêm os identificadores obrigatórios
+* [x] dados sensíveis não são registrados
+* [x] métricas expostas
+* [x] health checks verificados
+* [x] caminhos de métricas HTTP/SQS/pending-reference/outbox exercitados sem
+  incrementos diretos no collector
+* [x] segurança da entrada de correlation e logging operacional JSON-only do Fx verificados
+* [x] receive-exhaustion documentado como redrive candidate, não como inserção de DLQ confirmada
+* [x] duplicatas de idempotência são distintas de redelivery da inbox SQS e
+  conflitos sequenciais de idempotência são distintos de conflitos de concorrência
 
-> The targeted Loop 10 observability integrations were executed with real
-> PostgreSQL, LocalStack, Keycloak and Fx. The Loop 9 ordering integrations
-> use isolated PostgreSQL schemas and FIFO queues so concurrent packages cannot
-> introduce unrelated outbox rows or consume the scenario's messages; the
-> aggregate real-integration command passes with that test-harness correction.
+> As integrações direcionadas de observabilidade do Loop 10 foram executadas
+> com PostgreSQL, LocalStack, Keycloak e Fx reais. As integrações de ordenação
+> do Loop 9 usam schemas PostgreSQL e filas FIFO isolados, para que pacotes
+> concorrentes não introduzam outbox rows não relacionadas nem consumam as
+> mensagens do cenário; o comando agregado de integração real passa com essa
+> correção do test harness.
 
 ---
 
 # Loop 11 — Failure Engineering
 
-## Goal
+## Objetivo
 
-Attack the implementation and find correctness gaps.
+Atacar a implementação e encontrar gaps de corretude.
 
-### Scenarios
+### Cenários
 
 * [x] duplicate HTTP
 * [x] duplicate SQS
-* [x] HTTP + SQS same operation
-* [x] concurrent wallet writes
-* [x] process crash before commit
-* [x] process crash after commit
-* [x] consumer crash before SQS delete
-* [x] outbox publisher crash
+* [x] mesma operação HTTP + SQS
+* [x] escritas concorrentes na wallet
+* [x] process-crash antes do commit
+* [x] process-crash após o commit
+* [x] crash do consumer antes do delete SQS
+* [x] crash do publisher de outbox
 * [x] PostgreSQL temporary outage
 * [x] SQS temporary outage
-* [x] pending reference during restart
-* [x] multiple instances
-* [x] replay after restart
-* [x] 50 duplicate requests produce one financial movement
-* [x] 100/80/80 concurrent-wallet scenario
-* [x] three independent application processes
-* [x] consumer crash after commit before delete
-* [x] two outbox publishers
-* [x] late reversal/reference scenarios
-* [x] HTTP/SQS same operation
+* [x] referência pendente durante restart
+* [x] múltiplas instâncias
+* [x] replay após restart
+* [x] 50 requests duplicadas produzem um movimento financeiro
+* [x] cenário de wallet concorrente 100/80/80
+* [x] três processos independentes da aplicação
+* [x] crash do consumer após o commit e antes do delete
+* [x] dois publishers de outbox
+* [x] cenários de reversão/referência tardias
+* [x] mesma operação HTTP/SQS
 
-### Verification
+### Verificação
 
-For every failure found:
+Para cada falha encontrada:
 
 ```text
-Failure
+Falha
   ↓
-Reproduction
+Reprodução
   ↓
-Root cause
+Causa-raiz
   ↓
-Fix
+Correção
   ↓
-Regression test
+Teste de regressão
   ↓
-Documentation
+Documentação
 ```
 
-> Loop 11 adds controlled process-crash tests using isolated child test
-> processes. A PostgreSQL failure and a killed process before commit both roll
-> back wallet, transaction, ledger and outbox writes. A consumer killed after durable inbox completion
-> but before SQS deletion safely redelivers, and a publisher killed after a
-> successful SQS send but before `MarkPublished` recovers the same durable
-> outbox event after its lease. PostgreSQL and SQS temporary dependency faults
-> are injected at their client/SQL boundaries and followed by real recovery
-> against PostgreSQL and LocalStack. The tests do not claim a host or container
-> power-loss simulation.
+> O Loop 11 adiciona testes controlados de process-crash usando processos-filhos
+> de teste isolados. Uma falha do PostgreSQL e um processo encerrado antes do
+> commit fazem rollback das escritas de wallet, transação, ledger e outbox. Um
+> consumer encerrado após a conclusão durável da inbox, mas antes do delete SQS,
+> faz redelivery com segurança; um publisher encerrado após um send SQS
+> bem-sucedido, mas antes de `MarkPublished`, recupera o mesmo evento durável de
+> outbox após sua lease. Falhas temporárias das dependências PostgreSQL e SQS
+> são injetadas em suas fronteiras de client/SQL e seguidas de recovery real
+> contra PostgreSQL e LocalStack. Os testes não alegam simulação de perda de
+> energia do host ou container.
 
 ---
 
-# Loop 12 — Final Quality Gate
+# Loop 12 — Gate final de qualidade
 
-### Code
+### Código
 
 * [x] `gofmt`
 * [x] `go test ./...`
 * [x] `go test -race ./...`
 * [x] `go vet ./...`
 
-### Infrastructure
+### Infraestrutura
 
-* [x] clean Docker Compose startup
-* [x] migrations reproducible
-* [x] Keycloak provisioning reproducible
-* [x] queues reproducible
-* [x] test identities reproducible
+* [x] startup limpo do Compose
+* [x] migrations reproduzíveis
+* [x] provisionamento do Keycloak reproduzível
+* [x] filas reproduzíveis
+* [x] identidades de teste reproduzíveis
 
-### Documentation
+### Documentação
 
-* [x] README complete
-* [x] ARCHITECTURE complete
-* [x] `.env.example` complete
-* [x] limitations documented
-* [x] architecture decisions documented
+* [x] README completo
+* [x] ARCHITECTURE completo
+* [x] `.env.example` completo
+* [x] limitações documentadas
+* [x] decisões arquiteturais documentadas
 
-### Final verification
+### Verificação final
 
-* [x] clean checkout
-* [x] full test suite
-* [x] concurrency scenario
-* [x] duplicate scenario
-* [x] recovery scenario
+* [x] checkout limpo
+* [x] suíte completa de testes
+* [x] cenário de concorrência
+* [x] cenário de duplicata
+* [x] cenário de recovery
 * [x] reconciliation
-* [x] HTTP/SQS equivalence
-* [x] real PostgreSQL, SQS and IdP integration
+* [x] equivalência HTTP/SQS
+* [x] integração real de PostgreSQL, SQS e IdP
 * [x] migrations up/down
-* [x] clean Docker Compose startup
-* [x] authenticated examples and test identities
-* [x] multi-instance and failure simulations
-* [x] gofmt, test, race and vet gates
+* [x] startup limpo do Compose
+* [x] exemplos autenticados e identidades de teste
+* [x] simulações multi-instância e de falha
+* [x] gates de gofmt, testes, race e vet
 
 ---
 
-# Current Loop
+# Loop atual
 
 ```text
-Loop 12 — Final Quality Gate
+Loop 12 — Gate final de qualidade
 ```
 
-# Current Status
+# Status atual
 
 ```text
 IMPLEMENTED — PENDING HUMAN REVIEW
 ```
 
-# Rules
+# Regras
 
-Do not mark a task complete because code exists.
+Não marque uma tarefa como concluída apenas porque o código existe.
 
-A task is complete only after its relevant verification succeeds.
+Uma tarefa só está concluída depois que sua verificação relevante é bem-sucedida.
 
-When a verification exposes a defect:
+Quando uma verificação revelar um defeito:
 
-1. keep the task open;
-2. document the failure;
-3. fix the root cause;
-4. add regression coverage;
-5. rerun verification;
-6. then mark the task complete.
+1. mantenha a tarefa aberta;
+2. documente a falha;
+3. corrija a causa-raiz;
+4. adicione cobertura de regressão;
+5. execute novamente a verificação;
+6. então marque a tarefa como concluída.

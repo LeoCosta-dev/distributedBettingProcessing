@@ -1,99 +1,101 @@
 # distributedBettingProcessing
 
-Backend challenge implementation for distributed wagering transaction
-processing. The system uses Go, Uber Fx, PostgreSQL, SQS through LocalStack,
-and Keycloak. Financial correctness is PostgreSQL-backed: exact money,
-wallet-scoped locking, durable idempotency, append-only ledger, transactional
-inbox and transactional outbox are not delegated to FIFO delivery semantics.
+Implementação do desafio de backend para processamento distribuído de
+transações de apostas. O sistema usa Go, Uber Fx, PostgreSQL, SQS por meio do
+LocalStack e Keycloak. A correção financeira é respaldada pelo PostgreSQL:
+dinheiro exato, locking por wallet, idempotência durável, ledger append-only,
+inbox transacional e outbox transacional não são delegados à semântica de
+entrega FIFO.
 
 ## Status
 
-Loops 7–11 are checkpointed. Loop 12 completed the final validation and is
-pending Human Review. The checked-in implementation covers the challenge
-scope; the documented limitations below remain deliberate boundaries, not
-claims of exactly-once event delivery or physical power-loss testing.
+Os Loops 7–11 estão com checkpoint. O Loop 12 concluiu a validação final e está
+pendente de Human Review. A implementação versionada cobre o escopo do
+desafio; as limitações documentadas abaixo são fronteiras deliberadas, não
+alegações de entrega exactly-once ou de teste de perda física de energia.
 
-See:
+Consulte:
 
-* `SPEC.md` — functional and technical requirements;
-* `ARCHITECTURE.md` — architecture decisions and limitations;
-* `TASKS.md` — loop and verification state;
-* `AGENTS.md` — engineering rules.
+* `SPEC.md` — requisitos funcionais e técnicos;
+* `ARCHITECTURE.md` — decisões e limitações arquiteturais;
+* `TASKS.md` — estado dos loops e das verificações;
+* `AGENTS.md` — regras de engenharia.
 
-## Prerequisites
+## Pré-requisitos
 
-* Go 1.27.1 (the version declared in `go.mod` and `dockerfile`);
-* a Compose-compatible runtime, such as Docker Compose or Podman Compose;
-* the `migrate` CLI for the commands in `Makefile`;
-* `curl` and `jq` for the examples below.
+* Go 1.27.1 (versão declarada em `go.mod` e `dockerfile`);
+* um runtime compatível com Compose, como Docker Compose ou Podman Compose;
+* a CLI `migrate` para os comandos do `Makefile`;
+* `curl` e `jq` para os exemplos abaixo.
 
-Docker is not the protocol requirement: use the compatible Compose provider
-already installed in the environment. For example, replace `docker compose`
-below with `podman compose` where that is the available provider. Do not treat
-a skipped conditional integration test as evidence of a working dependency.
+Docker não é requisito do protocolo: use o provider Compose compatível já
+instalado no ambiente. Por exemplo, substitua `docker compose` abaixo por
+`podman compose` quando esse for o provider disponível. Um teste condicional
+em `SKIPPED` não deve ser tratado como evidência de que uma dependência está
+funcionando.
 
-## Local bootstrap
+## Bootstrap local
 
-Copy the safe local configuration, then start the infrastructure:
+Copie a configuração local segura e inicie a infraestrutura:
 
 ```bash
 cp .env.example .env
 docker compose up -d postgres localstack keycloak
 ```
 
-The Compose bootstrap imports the `wagering` Keycloak realm and creates:
+O bootstrap do Compose importa o realm `wagering` do Keycloak e cria:
 
 * `wager-transactions.fifo`;
-* `wager-transactions-dlq.fifo`, with the main queue redrive policy;
+* `wager-transactions-dlq.fifo`, com a redrive policy da fila principal;
 * `wager-events.fifo`.
 
-For a host-side migration command, use a host-reachable PostgreSQL URL rather
-than the Compose-network hostname in `.env.example`:
+Para executar migrations a partir do host, use uma URL de PostgreSQL acessível
+do host em vez do hostname da rede do Compose presente em `.env.example`:
 
 ```bash
 export DATABASE_URL='postgres://wagering:wagering@localhost:5432/wagering?sslmode=disable'
 make migrate-up
 ```
 
-Apply migrations before starting the application against an empty database.
-The versioned migrations are reversible with one controlled step at a time:
+Aplique as migrations antes de iniciar a aplicação contra um banco vazio. As
+migrations versionadas podem ser revertidas, uma etapa controlada por vez:
 
 ```bash
 make migrate-down
 make migrate-up
 ```
 
-`000003_opening_transaction.down.sql` intentionally refuses to remove
-`OPENING` support while opening transactions exist, because deleting their
-financial origin would be unsafe. Perform any production rollback through an
-explicit maintenance procedure; do not delete financial data to make a
-migration reverse.
+`000003_opening_transaction.down.sql` recusa intencionalmente remover o
+suporte a `OPENING` enquanto existirem transações de abertura, pois isso
+apagaria sua origem financeira. Faça qualquer rollback de produção por meio de
+um procedimento explícito de manutenção; não apague dados financeiros para
+fazer uma migration reverter.
 
-After migrations are applied, start the complete stack:
+Depois de aplicar as migrations, inicie a stack completa:
 
 ```bash
 docker compose up --build -d app
 curl -fsS http://localhost:8080/health/ready
 ```
 
-Expected readiness is PostgreSQL and SQS both `UP`. Liveness and readiness are
-separate endpoints; metrics do not replace either health check.
+A readiness esperada é PostgreSQL e SQS ambos `UP`. Liveness e readiness são
+endpoints distintos; metrics não substituem nenhum dos dois health checks.
 
-## Local OIDC identities and authenticated calls
+## Identidades OIDC locais e chamadas autenticadas
 
-The realm import is local-development-only. It provisions the following test
-identities, each with password `dev-only-pass`:
+A importação do realm é somente para desenvolvimento local. Ela provisiona as
+seguintes identidades de teste, todas com a senha `dev-only-pass`:
 
-| Identity | Role | Provider claim |
+| Identidade | Role | Claim do provider |
 | --- | --- | --- |
 | `wallet-admin` | `internal` | none |
 | `provider-alpha` | `provider` | `provider-alpha` |
 | `provider-beta` | `provider` | `provider-beta` |
 
-The client is `wagering-api` with the example secret `change-me`. These are
-safe local values from `.env.example`, not deployment credentials.
+O client é `wagering-api`, com o secret de exemplo `change-me`. Esses são
+valores locais seguros de `.env.example`, não credenciais de deployment.
 
-Obtain local tokens without printing them:
+Obtenha tokens locais sem imprimi-los:
 
 ```bash
 TOKEN_URL='http://localhost:8082/realms/wagering/protocol/openid-connect/token'
@@ -110,7 +112,7 @@ INTERNAL_TOKEN="$(token wallet-admin)"
 PROVIDER_TOKEN="$(token provider-alpha)"
 ```
 
-Open a wallet through the internal identity:
+Abra uma wallet usando a identidade interna:
 
 ```bash
 curl -fsS -X POST http://localhost:8080/wallets \
@@ -119,8 +121,8 @@ curl -fsS -X POST http://localhost:8080/wallets \
   --data '{"playerId":"player-001","initialBalance":{"amount":"100.00","currency":"BRL"}}'
 ```
 
-Use the returned `id` as `WALLET_ID`, then submit an authenticated provider
-operation. The request body provider must match the token claim.
+Use o `id` retornado como `WALLET_ID` e envie uma operação autenticada de
+provider. O provider no request body deve corresponder ao claim do token.
 
 ```bash
 curl -fsS -X POST http://localhost:8080/wagering/transactions \
@@ -130,13 +132,13 @@ curl -fsS -X POST http://localhost:8080/wagering/transactions \
   --data '{"providerId":"provider-alpha","externalTransactionId":"bet-001","playerId":"player-001","walletId":"'"$WALLET_ID"'","roundId":"round-001","gameId":"game-001","kind":"BET","money":{"amount":"25.00","currency":"BRL"}}'
 ```
 
-Repeat the same request with the same `Idempotency-Key` to receive the
-persisted result with `idempotentReplay: true`; it does not apply a second
-movement. Business routes require a real Keycloak token. Opening wallets is
-internal-only, while provider-scoped operations are restricted to the
-authenticated provider.
+Repita o mesmo request com o mesmo `Idempotency-Key` para receber o resultado
+persistido com `idempotentReplay: true`; nenhum segundo movimento será
+aplicado. As business routes exigem um token real do Keycloak. A abertura de
+wallet é somente interna, enquanto as operações com escopo de provider são
+restritas ao provider autenticado.
 
-## Operations and diagnostics
+## Operações e diagnósticos
 
 ```bash
 curl -fsS http://localhost:8080/health/live
@@ -144,19 +146,19 @@ curl -fsS http://localhost:8080/health/ready
 curl -fsS http://localhost:8080/metrics
 ```
 
-`X-Correlation-ID` is generated when absent. An external value is preserved
-only if it is a bounded safe ASCII identifier; invalid input is replaced.
-Application logs are JSON records with applicable correlation, message,
-transaction, wallet and provider identifiers. Logs and metric labels exclude
-credentials, full financial payloads, and business IDs. Metrics are
-process-local and reset on restart; they are diagnostic rather than a
-cluster-wide financial store. `wager_sqs_redrive_candidate_total` counts a
-message that exhausted the application receive budget, not a broker DLQ entry
-observed by the application.
+`X-Correlation-ID` é gerado quando ausente. Um valor externo só é preservado
+quando é um identificador ASCII seguro e limitado; uma entrada inválida é
+substituída. Os logs da aplicação são registros JSON com os identificadores
+de correlação `messageId`, `transactionId`, `walletId` e `providerId` disponíveis. Logs e
+labels de metrics excluem credenciais, payloads financeiros completos e IDs
+de negócio. As metrics são process-local e zeradas no restart; são
+diagnósticas, não um banco financeiro cluster-wide. A métrica
+`wager_sqs_redrive_candidate_total` conta uma mensagem que esgotou o orçamento
+de receives da aplicação, não uma entrada na DLQ observada pelo broker.
 
-## Verification
+## Verificação
 
-The standard quality gates are:
+Os Quality Gates padrão são:
 
 ```bash
 gofmt -l .
@@ -166,8 +168,9 @@ go vet ./...
 git diff --check
 ```
 
-For the real integration matrix from a host, start the Compose dependencies
-and use host endpoints explicitly. Conditional tests are enabled deliberately:
+Para a matriz de integração real a partir do host, inicie as dependências do
+Compose e use explicitamente os endpoints do host. Os testes condicionais
+devem ser habilitados de forma deliberada:
 
 ```bash
 DATABASE_URL='postgres://wagering:wagering@localhost:5432/wagering?sslmode=disable' \
@@ -188,35 +191,37 @@ go test -count=1 -v \
   ./internal/transport/http ./internal/transport/messaging
 ```
 
-That command exercises PostgreSQL transactions and constraints, Keycloak
-verification, SQS FIFO/DLQ, HTTP/SQS equivalence, inbox/outbox recovery,
-pending references, multiple pools/processes, Fx lifecycle, and the controlled
-failure scenarios. The Loop 9 ordering integrations use isolated PostgreSQL
-schemas and FIFO queues, so aggregate execution does not depend on unrelated
-rows or messages.
+Esse comando exercita transações e constraints do PostgreSQL, verificação do
+Keycloak, SQS FIFO/DLQ, equivalência HTTP/SQS, recovery de inbox/outbox,
+pending references, múltiplos pools/processos, lifecycle do Fx e os cenários
+controlados de falha. As integrações de ordering do Loop 9 usam schemas
+isolados do PostgreSQL e filas FIFO exclusivas, portanto a execução agregada
+não depende de rows ou mensagens não relacionadas.
 
-Focused examples for required adversarial scenarios are:
+Exemplos focados para os cenários adversariais exigidos:
 
 ```bash
 DATABASE_URL="$DATABASE_URL" go test -count=1 -run 'TestConcurrentBetsAcrossThreeOSProcesses|TestPersistentIdempotencyAcrossReplayRestartAndInstances' -v ./internal/application/financial
 DATABASE_URL="$DATABASE_URL" AWS_ENDPOINT_URL='http://localhost:4566' go test -count=1 -run 'TestLoop11' -v ./internal/application/financial ./internal/application/outbox ./internal/transport/messaging
 ```
 
-## Delivery boundaries
+## Fronteiras de entrega
 
-The outbox guarantees at-least-once publication after database commit. An
-ambiguous send can republish the same immutable payload with the same stable
-`eventId`; downstream consumers must deduplicate it. The controlled failure
-tests use real PostgreSQL/LocalStack and child-process `SIGKILL` at selected
-boundaries. They do not claim host power-loss or container-kill durability.
-LocalStack validates broker behavior but does not prove AWS IAM enforcement;
-deployment IAM remains an operational responsibility. No Loop 12 validation
-introduces a publisher beyond Loop 9 or changes financial production code.
+O outbox garante publicação at-least-once após o commit do banco. Um envio
+ambíguo pode republicar o mesmo payload imutável com o mesmo `eventId` estável;
+consumidores downstream devem deduplicá-lo. Os testes de falha controlada
+usam PostgreSQL/LocalStack reais e `SIGKILL` de subprocessos em fronteiras
+selecionadas. Eles não alegam durabilidade contra perda de energia do host ou
+kill físico de container. O LocalStack valida o comportamento do broker, mas
+não prova enforcement de AWS IAM; o IAM de deployment continua sendo uma
+responsabilidade operacional. Nenhuma validação do Loop 12 introduz publisher
+além do Loop 9 ou altera código financeiro de produção.
 
-## License
+## Licença
 
-This project is provided exclusively for technical evaluation, recruitment,
-interview, and portfolio review purposes.
+Este projeto é fornecido exclusivamente para avaliação técnica, recrutamento,
+entrevistas e portfólio.
 
-Production, commercial, redistribution, and derivative use is not authorized
-without prior written permission from the copyright holder. See [LICENSE](LICENSE).
+Uso em produção, comercial, redistribuição e uso derivado não são autorizados
+sem autorização prévia por escrito do titular dos direitos autorais. Consulte
+[LICENSE](LICENSE).

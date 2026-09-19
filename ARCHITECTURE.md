@@ -1,21 +1,21 @@
-# Architecture
+# Arquitetura
 
-## 1. Overview
+## 1. Visão geral
 
-This project implements a distributed wagering transaction processor in Go.
+Este projeto implementa um processador distribuído de transações de apostas em Go.
 
-The application is designed as a modular monolith that can run as multiple independent instances.
+A aplicação é projetada como um monólito modular que pode executar como múltiplas instâncias independentes.
 
-The primary architectural goal is financial correctness under:
+O principal objetivo arquitetural é a correção financeira sob:
 
-* concurrent processing;
-* duplicate delivery;
-* process interruption;
-* database failures;
-* message broker redelivery;
-* asynchronous event publication.
+* processamento concorrente;
+* entrega duplicada;
+* interrupção de processo;
+* falhas de banco de dados;
+* redelivery do message broker;
+* publicação assíncrona de eventos.
 
-The system separates:
+O sistema separa:
 
 ```text
 Domain
@@ -25,31 +25,31 @@ Transport
 Composition
 ```
 
-The domain does not depend on HTTP, SQS, PostgreSQL, Keycloak or Uber Fx.
+O domínio não depende de HTTP, SQS, PostgreSQL, Keycloak ou Uber Fx.
 
 ---
 
-# 2. Architectural Goals
+# 2. Objetivos arquiteturais
 
-The architecture prioritizes:
+A arquitetura prioriza:
 
-1. Financial correctness.
-2. Persistent idempotency.
-3. Database-enforced invariants.
-4. Safe concurrency across independent processes.
-5. Atomic financial state changes.
-6. Durable asynchronous processing.
-7. Recoverability after failures.
-8. Clear separation between domain and infrastructure.
-9. Reproducibility in a local Docker environment.
+1. Correção financeira.
+2. Idempotência persistente.
+3. Invariantes impostas pelo banco de dados.
+4. Concorrência segura entre processos independentes.
+5. Alterações atômicas do estado financeiro.
+6. Processamento assíncrono durável.
+7. Recuperabilidade após falhas.
+8. Separação clara entre domínio e infraestrutura.
+9. Reprodutibilidade em um ambiente Docker local.
 
-The architecture intentionally avoids unnecessary distributed services.
+A arquitetura evita intencionalmente serviços distribuídos desnecessários.
 
-Multiple application instances provide the distributed execution model required by the challenge.
+Múltiplas instâncias da aplicação fornecem o modelo de execução distribuída exigido pelo desafio.
 
 ---
 
-# 3. High-Level Architecture
+# 3. Arquitetura de alto nível
 
 ```text
                          ┌──────────────────┐
@@ -85,15 +85,15 @@ Multiple application instances provide the distributed execution model required 
                      └──────── Inbox ────────────┘
 ```
 
-HTTP and SQS converge on the same application-level financial processing use case.
+HTTP e SQS convergem para o mesmo use case de processamento financeiro no nível da aplicação.
 
-Transport adapters do not duplicate financial business rules.
+Adapters de transporte não duplicam regras de negócio financeiro.
 
 ---
 
-# 4. Package Structure
+# 4. Estrutura de packages
 
-Proposed structure:
+Estrutura proposta:
 
 ```text
 cmd/
@@ -130,34 +130,34 @@ tests/
   recovery/
 ```
 
-The exact package organization may evolve if implementation evidence demonstrates a better boundary.
+A organização exata dos packages pode evoluir se a evidência da implementação demonstrar uma fronteira melhor.
 
-Changes must preserve domain independence.
+As mudanças devem preservar a independência do domínio.
 
 ---
 
-# 5. Domain Layer
+# 5. Camada de domínio
 
-The domain contains:
+O domínio contém:
 
 * entities;
 * value objects;
-* domain errors;
-* state transitions;
-* financial invariants;
-* business rules.
+* erros de domínio;
+* transições de estado;
+* invariantes financeiras;
+* regras de negócio.
 
-The domain must not import:
+O domínio não deve importar:
 
 * Uber Fx;
-* HTTP packages;
-* SQS SDK;
-* PostgreSQL drivers;
-* Keycloak libraries.
+* packages HTTP;
+* SDK do SQS;
+* drivers do PostgreSQL;
+* bibliotecas do Keycloak.
 
-## Domain objects
+## Objetos de domínio
 
-Primary domain concepts:
+Conceitos primários do domínio:
 
 ```text
 Money
@@ -166,19 +166,19 @@ WagerTransaction
 WalletLedgerEntry
 ```
 
-Creation and rehydration must be separate concepts.
+A criação e a rehydration devem ser conceitos distintos.
 
-Rehydrating persisted state must not reapply financial operations or emit events.
+Reidratar estado persistido não deve reaplicar operações financeiras nem emitir eventos.
 
 ---
 
-# 6. Money Representation
+# 6. Representação de Money
 
-## Decision
+## Decisão
 
-Use `int64` representing the smallest monetary unit.
+Use `int64` representando a menor unidade monetária.
 
-For the current challenge:
+Para o desafio atual:
 
 ```text
 1 BRL = 100 cents
@@ -190,9 +190,9 @@ Example:
 "25.00" BRL -> 2500
 ```
 
-The domain type still carries currency.
+O tipo de domínio ainda carrega currency.
 
-External serialization remains:
+A serialização externa permanece:
 
 ```json
 {
@@ -201,79 +201,77 @@ External serialization remains:
 }
 ```
 
-## Rationale
+## Justificativa
 
-`int64` provides exact deterministic arithmetic for fixed two-decimal monetary values without floating-point errors.
+`int64` fornece aritmética exata e determinística para valores monetários fixos com duas casas decimais, sem erros de ponto flutuante.
 
-It also avoids introducing a decimal library unless future requirements require precision beyond the challenge's fixed scale.
+Também evita introduzir uma biblioteca decimal, a menos que requisitos futuros exijam precisão além da escala fixa do desafio.
 
-## Required protections
+## Proteções obrigatórias
 
-Parsing, addition, subtraction and negation must detect overflow.
+Parsing, adição, subtração e negação devem detectar overflow.
 
 ---
 
-# 7. Persistence
+# 7. Persistência
 
-## Decision
+## Decisão
 
-Use PostgreSQL with `pgx` and explicit SQL.
+Use PostgreSQL com `pgx` e SQL explícito.
 
-## Rationale
+## Justificativa
 
-The challenge explicitly requires financial invariants, transactions, locks and constraints to remain visible and verifiable.
+O desafio exige explicitamente que invariantes financeiras, transações, locks e constraints permaneçam visíveis e verificáveis.
 
-Explicit SQL makes:
+SQL explícito torna fáceis de inspecionar:
 
-* transaction boundaries;
+* fronteiras transacionais;
 * row locks;
 * uniqueness constraints;
 * check constraints;
-* update conditions
+* condições de update
 
-easy to inspect.
-
-Repository abstractions should remain focused on persistence operations rather than hiding important transaction semantics.
+As abstrações de repository devem permanecer focadas em operações de persistência, em vez de esconder semânticas transacionais importantes.
 
 ---
 
-# 8. Financial Transaction Boundary
+# 8. Fronteira da transação financeira
 
-A financial operation must be committed atomically.
+Uma operação financeira deve fazer commit atomicamente.
 
-For a normal successful operation, the database transaction may contain:
+Para uma operação normal bem-sucedida, a transação do banco pode conter:
 
 ```text
 BEGIN
 
-lock wallet
+lock da wallet
         ↓
-validate transaction
+validação da transação
         ↓
-change wallet balance
+alteração do saldo da wallet
         ↓
-create wager transaction state
+criação do estado da wager transaction
         ↓
-create ledger entry
+criação da entrada do ledger
         ↓
-create outbox events
+criação dos eventos de outbox
 
 COMMIT
 ```
 
-No external event publication occurs before `COMMIT`.
+Nenhum evento externo é publicado antes de `COMMIT`.
 
-The transaction boundary must be explicit in code.
+A fronteira transacional deve ser explícita no código.
 
 ---
 
-# 9. Concurrency Strategy
+# 9. Estratégia de concorrência
 
-## Decision
+## Decisão
 
-Use PostgreSQL row-level locking at wallet scope.
+Use row-level locking do PostgreSQL no escopo da wallet.
 
-The expected primary mechanism is:
+O mecanismo primário esperado é:
 
 ```sql
 SELECT ...
@@ -282,140 +280,141 @@ WHERE id = $1
 FOR UPDATE;
 ```
 
-The lock is acquired inside the same PostgreSQL transaction that performs the financial mutation.
+O lock é adquirido dentro da mesma transação PostgreSQL que realiza a mutação financeira.
 
-## Rationale
+## Justificativa
 
-The wallet is the financial aggregate root and therefore the natural coordination boundary.
+A wallet é a raiz do aggregate financeiro e, portanto, a fronteira natural de coordenação.
 
-Row-level locking:
+O row-level locking:
 
-* coordinates independent application processes;
-* does not depend on local Go memory;
-* prevents lost updates;
-* serializes operations for the same wallet;
-* allows different wallets to proceed concurrently.
+* coordena processos independentes da aplicação;
+* não depende da memória local do Go;
+* evita lost updates;
+* serializa operações para a mesma wallet;
+* permite que wallets diferentes progridam concorrentemente.
 
-Global application locks are prohibited.
+Locks globais da aplicação são proibidos.
 
 ---
 
-# 10. Wallet Balance Invariant
+# 10. Invariante do saldo da Wallet
 
-A debit is allowed only when:
+Um débito é permitido somente quando:
 
 ```text
 balance >= debit
 ```
 
-The database must participate in protecting this invariant.
+O banco deve participar da proteção dessa invariante.
 
-Application validation alone is insufficient because multiple independent processes may execute concurrently.
+A validação somente na aplicação é insuficiente porque múltiplos processos independentes podem executar concorrentemente.
 
-The implementation must use both:
+A implementação deve usar ambos:
 
 ```text
-application/domain validation
+validação da aplicação/domínio
 +
-database transaction/constraint protection
+proteção por transação/constraint do banco
 ```
 
-to prevent negative balances.
+para impedir saldos negativos.
 
 ---
 
-# 11. Idempotency Strategy
+# 11. Estratégia de idempotência
 
-Idempotency is persistent.
+A idempotência é persistente.
 
-The database is the source of truth.
+O banco é a fonte de verdade.
 
-The implementation must persist:
+A implementação deve persistir:
 
-* idempotency key;
-* business identity;
-* payload hash;
-* processing state;
-* persisted result information.
+* chave de idempotência;
+* identidade de negócio;
+* hash do payload;
+* estado do processamento;
+* informações do resultado persistido.
 
-Database uniqueness must protect:
+A unicidade do banco deve proteger:
 
 ```text
 (providerId, externalTransactionId)
 ```
 
-and the applicable idempotency identity.
+e a identidade de idempotência aplicável.
 
-The system must distinguish:
+O sistema deve distinguir:
 
 ```text
-same key + same payload
-same key + different payload
-same transaction identity + different key
+mesma chave + mesmo payload
+mesma chave + payload diferente
+mesma identidade de transação + chave diferente
 ```
 
-A replay must return the original persisted result.
+Um replay deve retornar o resultado persistido original.
 
-The original balance returned by a replay is the balance observed when the transaction was processed, not the wallet's current balance.
+O saldo original retornado por um replay é o saldo observado quando a transação foi processada, não o saldo atual da wallet.
 
 ---
 
-# 12. Payload Hashing
+# 12. Hashing do payload
 
-Use canonical JSON for deterministic payload hashing.
+Use JSON canônico para hashing determinístico do payload.
 
-Business fields are included.
+Campos de negócio são incluídos.
 
-Transport-specific metadata is excluded.
+Metadados específicos do transporte são excluídos.
 
-The idempotency key is excluded.
+A chave de idempotência é excluída.
 
-The same canonicalization implementation/rules must be shared between HTTP and SQS.
+A mesma implementação/regras de canonicalização deve ser compartilhada entre HTTP e SQS.
 
-The algorithm must be documented and covered by tests.
+O algoritmo deve ser documentado e coberto por testes.
 
-Architectural decision for the current implementation, not a requirement
-attributed to CHALLENGE.md: the canonical representation is JSON produced from
-the ordered business fields `externalTransactionId`, `providerId`, `walletId`,
-`playerId`, `gameId`, `roundId`, `referenceExternalTransactionId` (when
-present), `kind` and the exact `{amount,currency}` value from `money`. The
-internal request ID, idempotency key, caller-provided hash and transport
-metadata are excluded. The payload hash is the lowercase hexadecimal SHA-256
-digest of that canonical JSON. The implementation's legacy aliases are tracked
-in ADR-006's conflict register and are not normative.
+Decisão arquitetural da implementação atual, não um requisito atribuído a
+CHALLENGE.md: a representação canônica é o JSON produzido a partir dos
+campos de negócio ordenados `externalTransactionId`, `providerId`, `walletId`,
+`playerId`, `gameId`, `roundId`, `referenceExternalTransactionId` (quando
+presente), `kind` e o valor exato `{amount,currency}` de `money`. O ID interno
+do request, a chave de idempotência, o hash fornecido pelo caller e os
+metadados de transporte são excluídos. O hash do payload é o digest SHA-256
+hexadecimal em minúsculas desse JSON canônico. Os aliases legados da
+implementação estão registrados no conflict register do ADR-006 e não são
+normativos.
 
 ---
 
 # 13. Ledger
 
-The ledger is append-only.
+O ledger é append-only.
 
-A ledger entry is never updated or deleted.
+Uma entrada do ledger nunca é atualizada ou apagada.
 
-Database protections must prevent mutation.
+As proteções do banco devem impedir mutações.
 
-The unique relationship:
+A relação de unicidade:
 
 ```text
 (walletId, transactionId)
 ```
 
-prevents duplicate financial ledger entries.
+impede entradas financeiras duplicadas no ledger.
 
-The wallet balance and ledger entry are committed in the same database transaction.
+O saldo da wallet e a entrada do ledger fazem commit na mesma transação do banco.
 
-The ledger is the authoritative audit trail used by reconciliation.
+O ledger é a trilha de auditoria autoritativa usada pela reconciliation.
 
 ---
 
-# 14. Transaction State Machine
+# 14. Máquina de estados da transação
 
 ```text
              ┌─────────────────────┐
              │       PENDING       │
              └──────────┬──────────┘
                         │
-                processing required
+                processamento necessário
                         │
              ┌──────────▼──────────┐
              │     PROCESSED       │
@@ -425,29 +424,29 @@ The ledger is the authoritative audit trail used by reconciliation.
              │       PENDING       │
              └──────────┬──────────┘
                         │
-                 reference missing
+                 referência ausente
                         │
              ┌──────────▼──────────┐
              │ PENDING_REFERENCE   │
              └──────────┬──────────┘
                         │
-                 reference resolved
+                 referência resolvida
                         │
                         ▼
-                   processing
+processamento
                         │
                 ┌───────┴────────┐
                 ▼                ▼
            PROCESSED          REJECTED
 
 
-PENDING / processing failure
+PENDING / falha de processamento
         │
         ▼
 FAILED
 ```
 
-Terminal states:
+Estados terminais:
 
 ```text
 PROCESSED
@@ -455,108 +454,108 @@ REJECTED
 FAILED
 ```
 
-Terminal transactions cannot transition again.
+Transações terminais não podem fazer nova transição.
 
 ---
 
-# 15. Reversals
+# 15. Reversões
 
-Reversals are resolved through:
+Reversões são resolvidas por meio de:
 
 ```text
 (providerId, referenceExternalTransactionId)
 ```
 
-Reference resolution must validate:
+A resolução da referência deve validar:
 
 * provider;
 * player;
 * wallet;
 * currency;
 * round;
-* original transaction state;
-* original transaction type;
-* reversal amount.
+* estado da transação original;
+* tipo da transação original;
+* valor da reversão.
 
-Duplicate reversals are prevented through database constraints and application validation.
+Reversões duplicadas são impedidas por constraints do banco e validação da aplicação.
 
 ---
 
-# 16. Pending References
+# 16. Referências pendentes
 
-A missing reference is not treated as an infrastructure failure.
+Uma referência ausente não é tratada como falha de infraestrutura.
 
-The transaction is durably persisted as:
+A transação é persistida de forma durável como:
 
 ```text
 PENDING_REFERENCE
 ```
 
-A worker periodically retries pending references.
+Um worker tenta novamente referências pendentes periodicamente.
 
-The worker uses exponential backoff and a configurable retry limit or TTL.
+O worker usa backoff exponencial e um limite de retry ou TTL configurável.
 
-Pending work survives application restarts.
+O trabalho pendente sobrevive a restarts da aplicação.
 
 ---
 
-# 17. Inbox Pattern
+# 17. Padrão Inbox
 
-The SQS consumer uses a durable inbox.
+O consumer SQS usa um inbox durável.
 
-The inbox provides application-level deduplication in addition to any SQS FIFO deduplication.
+O inbox fornece deduplicação no nível da aplicação além de qualquer deduplicação FIFO do SQS.
 
-Identity:
+Identidade:
 
 ```text
 (consumerName, messageId)
 ```
 
-The inbox record and financial processing must share the same database transaction when the message performs a financial operation.
+O registro do inbox e o processamento financeiro devem compartilhar a mesma transação do banco quando a mensagem realizar uma operação financeira.
 
-A message is deleted from SQS only after the durable transaction commits.
+Uma mensagem é apagada do SQS somente depois do commit da transação durável.
 
 ---
 
-# 18. Transactional Outbox
+# 18. Outbox transacional
 
-Integration events are persisted in the same PostgreSQL transaction as the state changes that caused them.
+Eventos de integração são persistidos na mesma transação PostgreSQL que as alterações de estado que os causaram.
 
-The outbox therefore closes the failure window between:
-
-```text
-database commit
-```
-
-and:
+O outbox fecha, portanto, a janela de falha entre:
 
 ```text
-event publication
+commit do banco de dados
 ```
 
-A worker publishes pending events asynchronously.
+e:
 
-Multiple workers may operate concurrently.
+```text
+publicação do evento
+```
 
-Workers must safely claim records so that two workers do not simultaneously own the same publication attempt.
+Um worker publica eventos pendentes de forma assíncrona.
 
-Publication may be repeated after an ambiguous failure.
+Múltiplos workers podem operar concorrentemente.
 
-Therefore:
+Workers devem fazer claim seguro dos registros para que dois workers não sejam simultaneamente donos da mesma tentativa de publicação.
+
+A publicação pode ser repetida após uma falha ambígua.
+
+Portanto:
 
 ```text
 eventId
 ```
 
-must remain stable across retries and republication.
+deve permanecer estável entre retries e republicações.
 
-Consumers are expected to use event IDs for their own deduplication.
+Espera-se que os consumers usem event IDs para sua própria deduplicação.
 
 ---
 
-# 19. Event Model
+# 19. Modelo de eventos
 
-Required events:
+Eventos obrigatórios:
 
 ```text
 WagerTransactionProcessed
@@ -565,104 +564,104 @@ WalletBalanceChanged
 WagerTransactionPendingReference
 ```
 
-Events contain:
+Eventos contêm:
 
 ```text
 eventId
 eventType
 aggregateId
 correlationId
-causationId (optional)
+causationId (opcional)
 occurredAt
 version
 data
 ```
 
-Event payloads are immutable snapshots.
+Payloads de eventos são snapshots imutáveis.
 
-Money is serialized as decimal strings.
+Money é serializado como strings decimais.
 
-Timestamps use UTC RFC 3339.
+Timestamps usam UTC RFC 3339.
 
 ---
 
-# 20. HTTP / SQS Equivalence
+# 20. Equivalência HTTP / SQS
 
-HTTP and SQS are different transport mechanisms for the same financial command.
+HTTP e SQS são mecanismos de transporte diferentes para o mesmo comando financeiro.
 
-The flow is:
+O fluxo é:
 
 ```text
 HTTP
   ↓
 HTTP adapter
   ↓
-Application command
+Comando da aplicação
   ↓
-Financial use case
+Use case financeiro
 ```
 
-and:
+e:
 
 ```text
 SQS
   ↓
 Consumer
   ↓
-Application command
+Comando da aplicação
   ↓
-Financial use case
+Use case financeiro
 ```
 
-Business rules must not be implemented independently in the two paths.
+Regras de negócio não devem ser implementadas de forma independente nos dois caminhos.
 
-This guarantees equivalent financial behavior regardless of transport.
-
----
-
-# 21. Authentication
-
-Use Keycloak as the local OAuth 2.0/OIDC provider.
-
-The application validates tokens issued by the configured IdP.
-
-The authenticated identity determines the authorized provider.
-
-Provider authorization must be enforced before accessing provider-scoped transaction data.
-
-The application does not:
-
-* store user passwords;
-* issue its own authentication tokens.
+Isso garante comportamento financeiro equivalente independentemente do transporte.
 
 ---
 
-# 22. Authorization
+# 21. Autenticação
 
-Provider-scoped operations must always enforce:
+Use Keycloak como provider OAuth 2.0/OIDC local.
+
+A aplicação valida tokens emitidos pelo IdP configurado.
+
+A identidade autenticada determina o provider autorizado.
+
+A autorização do provider deve ser imposta antes do acesso a dados de transações com escopo de provider.
+
+A aplicação não:
+
+* armazena senhas de usuários;
+* emite seus próprios tokens de autenticação.
+
+---
+
+# 22. Autorização
+
+Operações com escopo de provider devem sempre impor:
 
 ```text
 authenticated provider == requested provider
 ```
 
-This applies to:
+Isso se aplica a:
 
-* transaction creation;
-* transaction retrieval;
-* transaction replay;
-* external transaction lookup.
+* criação de transação;
+* recuperação de transação;
+* replay de transação;
+* lookup de transação externa.
 
-Internal wallet operations are not provider operations.
+Operações internas de wallet não são operações de provider.
 
-Authorization failures must not cause financial side effects.
+Falhas de autorização não devem causar efeitos financeiros.
 
 ---
 
 # 23. Uber Fx
 
-Uber Fx is responsible for application composition and lifecycle.
+Uber Fx é responsável pela composição e pelo lifecycle da aplicação.
 
-Expected dependency graph:
+Grafo de dependências esperado:
 
 ```text
 Configuration
@@ -683,33 +682,33 @@ Use:
 * `fx.Invoke`;
 * `fx.Lifecycle`.
 
-The domain remains unaware of Fx.
+O domínio permanece sem conhecimento de Fx.
 
 ---
 
-# 24. Lifecycle and Shutdown
+# 24. Lifecycle e shutdown
 
-Application shutdown follows:
+O shutdown da aplicação segue:
 
 ```text
 SIGTERM
   ↓
-stop accepting new work
+parar de aceitar trabalho novo
   ↓
-stop message polling
+parar o polling de mensagens
   ↓
-finish or release in-flight work
+finalizar ou liberar trabalho em andamento
   ↓
-stop background workers
+parar workers em background
   ↓
-close dependencies
+fechar dependências
   ↓
 exit
 ```
 
-Cancellation and deadlines must propagate through `context.Context`.
+Cancelamento e deadlines devem propagar por `context.Context`.
 
-Workers must not be abandoned without a safe recovery mechanism.
+Workers não devem ser abandonados sem um mecanismo seguro de recovery.
 
 ---
 
@@ -721,7 +720,7 @@ Workers must not be abandoned without a safe recovery mechanism.
 GET /health/live
 ```
 
-Indicates that the process is alive.
+Indica que o processo está vivo.
 
 ## Readiness
 
@@ -729,20 +728,20 @@ Indicates that the process is alive.
 GET /health/ready
 ```
 
-Checks required dependencies, primarily:
+Verifica as dependências obrigatórias, principalmente:
 
 * PostgreSQL;
 * SQS.
 
-A dependency outage should make readiness fail without necessarily terminating the process.
+Uma indisponibilidade de dependência deve fazer a readiness falhar sem necessariamente encerrar o processo.
 
 ---
 
-# 26. Observability
+# 26. Observabilidade
 
-Use structured JSON logging.
+Use logging JSON estruturado.
 
-Important correlation identifiers:
+Identificadores importantes de correlação:
 
 ```text
 correlationId
@@ -752,126 +751,126 @@ walletId
 providerId
 ```
 
-Logs must not contain complete sensitive financial payloads or credentials.
+Logs não devem conter payloads financeiros sensíveis completos ou credenciais.
 
-Metrics include:
+Metrics incluem:
 
 ```text
-transaction status
-idempotency duplicates
-retry count
-DLQ count
-concurrency conflicts
-outbox delay
-processing latency
-reconciliation divergence
+status da transação
+duplicatas de idempotência
+contagem de retry
+contagem de DLQ
+conflitos de concorrência
+atraso do outbox
+latência de processamento
+divergência de reconciliation
 ```
 
 ---
 
-# 27. Testing Strategy
+# 27. Estratégia de testes
 
-Testing is organized into:
+Os testes são organizados em:
 
 ```text
-unit
-integration
-concurrency
+unitários
+integração
+concorrência
 recovery
 ```
 
-Unit tests verify domain behavior.
+Testes unitários verificam o comportamento do domínio.
 
-Integration tests verify real infrastructure behavior.
+Testes de integração verificam o comportamento da infraestrutura real.
 
-Concurrency tests verify multiple independent processes.
+Testes de concorrência verificam múltiplos processos independentes.
 
-Recovery tests verify crash/restart behavior.
+Testes de recovery verificam o comportamento de crash/restart.
 
-The goal is to prove system guarantees rather than merely increase code coverage.
-
----
-
-# 28. Distributed Verification
-
-The implementation must be exercised with at least three independent application processes.
-
-Independent means:
-
-* separate process;
-* separate Go memory;
-* separate database connection pool.
-
-No correctness guarantee may depend on process-local memory.
+O objetivo é provar as garantias do sistema, e não apenas aumentar a cobertura de código.
 
 ---
 
-# 29. Failure Model
+# 28. Verificação distribuída
 
-The system assumes:
+A implementação deve ser exercitada com pelo menos três processos independentes da aplicação.
+
+Independente significa:
+
+* processo separado;
+* memória Go separada;
+* pool de conexões do banco separado.
+
+Nenhuma garantia de correção pode depender de memória process-local.
+
+---
+
+# 29. Modelo de falhas
+
+O sistema assume:
 
 ```text
 at-least-once delivery
 ```
 
-Therefore duplicate processing is expected.
+Portanto, processamento duplicado é esperado.
 
-The architecture must tolerate:
+A arquitetura deve tolerar:
 
 ```text
-duplicate HTTP request
-duplicate SQS message
-process crash before commit
-process crash after commit
-process crash after event publication
-database temporary outage
-SQS temporary outage
-reference arriving late
+request HTTP duplicado
+mensagem SQS duplicada
+crash de processo antes do commit
+crash de processo depois do commit
+crash de processo depois da publicação do evento
+indisponibilidade temporária do banco
+indisponibilidade temporária do SQS
+chegada tardia da referência
 ```
 
-The design treats retries and duplicates as normal operational conditions.
+O design trata retries e duplicatas como condições operacionais normais.
 
 ---
 
-# 30. Local Infrastructure
+# 30. Infraestrutura local
 
-Docker Compose provides:
+Docker Compose fornece:
 
 ```text
 PostgreSQL
 LocalStack
 Keycloak
-application dependencies
+dependências da aplicação
 ```
 
-The exact versions are pinned or explicitly documented.
+As versões exatas são fixadas ou documentadas explicitamente.
 
-Infrastructure configuration must be reproducible from a clean checkout.
-
----
-
-# 31. Security
-
-Secrets are provided through environment variables.
-
-Real secrets must never be committed.
-
-`.env.example` contains only safe local example values.
-
-Provider authorization must be enforced at the application boundary.
-
-Logs must avoid credentials and sensitive payloads.
+A configuração de infraestrutura deve ser reproduzível a partir de um checkout limpo.
 
 ---
 
-# 32. Architectural Trade-offs
+# 31. Segurança
 
-The solution intentionally favors:
+Secrets são fornecidos por variáveis de ambiente.
+
+Secrets reais nunca devem ser commitados.
+
+`.env.example` contém apenas valores locais seguros de exemplo.
+
+A autorização do provider deve ser imposta na fronteira da aplicação.
+
+Logs devem evitar credenciais e payloads sensíveis.
+
+---
+
+# 32. Trade-offs arquiteturais
+
+A solução favorece intencionalmente:
 
 ```text
 explicit SQL
 +
-database transactions
+transações de banco de dados
 +
 row-level locks
 +
@@ -880,385 +879,408 @@ persistent idempotency
 inbox/outbox
 ```
 
-over more abstract or distributed coordination mechanisms.
+em vez de mecanismos de coordenação mais abstratos ou distribuídos.
 
-The challenge is evaluated primarily on correctness and recoverability.
+O desafio é avaliado principalmente por correção e recuperabilidade.
 
-Complexity should only be introduced where it protects a documented requirement.
-
----
-
-# 33. Known Limitations
-
-This section must be updated during implementation.
-
-Every limitation should state:
-
-* what is not implemented;
-* why;
-* impact;
-* possible future improvement.
-
-Do not hide incomplete requirements.
+Complexidade só deve ser introduzida quando proteger um requisito documentado.
 
 ---
 
-# 34. Architecture Decision Log
+# 33. Limitações conhecidas
 
-Architectural changes discovered during implementation should be recorded here.
+Esta seção deve ser atualizada durante a implementação.
 
-Format:
+Toda limitação deve declarar:
+
+* o que não está implementado;
+* por quê;
+* impacto;
+* possível melhoria futura.
+
+Não esconda requisitos incompletos.
+
+---
+
+# 34. Registro de decisões arquiteturais
+
+Alterações arquiteturais descobertas durante a implementação devem ser registradas aqui.
+
+Formato:
 
 ```text
-## ADR-NNN — Title
+## ADR-NNN — Título
 
 Status:
-Date:
+Data:
 
-Context:
+Contexto:
 
-Decision:
+Decisão:
 
-Alternatives:
+Alternativas:
 
-Consequences:
+Consequências:
 ```
 
-## ADR-006 — Loop 6 HTTP and OIDC integration decisions
+## ADR-006 — decisões de integração HTTP e OIDC do Loop 6
 
 Status: APPROVED FOR LOOP 6 IMPLEMENTATION; PROVENANCE RECONCILED
-Date: 2026-09-17
+Data: 2026-09-17
 
-Context:
+Contexto:
 
-Loop 6 needs transport, identity, lifecycle and read-model decisions before
-its implementation can be reviewed. The normative SPEC was restored before
-the complete primary challenge source was available. The recovered
-`CHALLENGE.md` now shows that several of the following choices were already
-explicit or partially explicit in the primary source, while other values were
-selected later for the Loop 6 implementation.
+O Loop 6 precisa de decisões sobre transporte, identidade, lifecycle e
+read-model antes que sua implementação possa ser revisada. A SPEC normativa
+foi restaurada antes de a fonte primária completa do desafio estar disponível.
+O `CHALLENGE.md` recuperado mostra agora que várias escolhas a seguir já eram
+explícitas ou parcialmente explícitas na fonte primária, enquanto outros
+valores foram selecionados posteriormente para a implementação do Loop 6.
 
-Decision:
+Decisão:
 
-The following decisions are adopted by the current implementation. Their
-provenance is recorded individually; none is retroactively presented as a
-requirement recovered from the earlier truncated SPEC.
+As decisões a seguir são adotadas pela implementação atual. Sua proveniência
+é registrada individualmente; nenhuma é apresentada retroativamente como um
+requisito recuperado da SPEC anteriormente truncada.
 
-* **EXPLICIT IN CHALLENGE:** HTTP uses JSON. Money is represented on the wire as
+* **EXPLÍCITO NO CHALLENGE:** HTTP usa JSON. Money é representado no wire como
   `{ "amount": "25.00", "currency": "BRL" }`.
-* **HUMAN DECISION:** HTTP errors use
+* **DECISÃO HUMANA:** erros HTTP usam
   `{ "error": { "code": "...", "message": "..." } }`.
-  `REJECTED` and `PENDING_REFERENCE` are HTTP 200 outcomes; wallet creation
-  returns 201 and a duplicate wallet returns 409 with
+  `REJECTED` e `PENDING_REFERENCE` são resultados HTTP 200; a criação de
+  wallet retorna 201 e uma wallet duplicada retorna 409 com
   `WALLET_ALREADY_EXISTS`.
-* **EXPLICIT IN CHALLENGE:** External wagering requests use the
-  `Idempotency-Key` header. Canonical payload hashing excludes the key and
-  transport metadata.
-* **PARTIALLY EXPLICIT:** `idempotentReplay` is returned for replayed POST
-  wagering results; its exact implementation inference is a Loop 6 choice.
-* **PARTIALLY EXPLICIT:** The provider identity is authenticated and provider
-  isolation is required. The concrete `provider_id` claim mapping is a later
-  implementation choice.
-* **PARTIALLY EXPLICIT:** Provider and internal authorization is required and
-  health is public. The concrete role names `provider` and `internal`, the
-  `wagering-api` audience and the route-by-route matrix were selected for Loop
-  6.
-* **PARTIALLY EXPLICIT:** Ledger reads use keyset pagination ordered by
-  `(timestamp, id)`. Default 50, maximum 100, opaque cursor and `limit+1`
-  are Loop 6 choices implementing that requirement; OFFSET is not used.
-* **EXPLICIT IN CHALLENGE:** Health checks are public, liveness is required,
-  and readiness covers PostgreSQL and SQS. **HUMAN DECISION:** Loop 6
-  liveness performs no dependency check and its SQS readiness portion is
-  deferred to Loop 7; this is not the final readiness architecture.
-* **EXPLICIT IN CHALLENGE:** An external OAuth 2.0/OIDC IdP, authenticated
-  identity, provider isolation and appropriate authorization are required.
-  **HUMAN DECISION:** the issuer, audience, signature-validation policy,
-  `exp`/`nbf` policy, clock-skew policy, go-oidc, real JWKS, RS256 and the
-  allowance for distinct network endpoints identifying one realm are concrete
-  adapter decisions, not requirements selected by the primary source.
-* **HUMAN DECISION:** HTTP shutdown uses a configurable ten-second default to
-  drain in-flight requests before dependencies close.
-* **EXPLICIT IN CHALLENGE:** Internal wallet opening requires the documented
-  opening balance contract; `0.00` creates a wallet without a financial
-  movement. **PARTIALLY EXPLICIT:** reconciliation is read-only and its
-  response is defined; the internal route/authentication boundary is a Loop 6
-  decision.
+* **EXPLÍCITO NO CHALLENGE:** requests externos de apostas usam o
+  header `Idempotency-Key`. O hashing canônico do payload exclui a chave e os
+  metadados de transporte.
+* **PARCIALMENTE EXPLÍCITO:** `idempotentReplay` é retornado para resultados
+  de POST de apostas repetidos; sua inferência exata de implementação é uma
+  escolha do Loop 6.
+* **PARCIALMENTE EXPLÍCITO:** a identidade do provider é autenticada e o
+  isolamento de provider é obrigatório. O mapeamento concreto do claim
+  `provider_id` é uma escolha posterior de implementação.
+* **PARCIALMENTE EXPLÍCITO:** autorização de provider e interna é obrigatória
+  e health é público. Os nomes concretos de role `provider` e `internal`, a
+  audience `wagering-api` e a matriz por rota foram selecionados para o Loop 6.
+* **PARCIALMENTE EXPLÍCITO:** leituras do ledger usam keyset pagination
+  ordenada por `(timestamp, id)`. Default 50, máximo 100, cursor opaco e
+  `limit+1` são escolhas do Loop 6 que implementam esse requisito; OFFSET não
+  é usado.
+* **EXPLÍCITO NO CHALLENGE:** health checks são públicos, liveness é
+  obrigatória e readiness cobre PostgreSQL e SQS. **DECISÃO HUMANA:** a
+  liveness do Loop 6 não faz check de dependências e sua parte de readiness
+  SQS foi adiada para o Loop 7; essa não é a arquitetura final de readiness.
+* **EXPLÍCITO NO CHALLENGE:** um IdP OAuth 2.0/OIDC externo, identidade
+  autenticada, isolamento de provider e autorização adequada são obrigatórios.
+  **DECISÃO HUMANA:** issuer, audience, política de validação de assinatura,
+  política de `exp`/`nbf`, política de clock-skew, go-oidc, JWKS real, RS256 e
+  a permissão para endpoints de rede distintos identificarem um realm são
+  decisões concretas do adapter, não requisitos selecionados pela fonte
+  primária.
+* **DECISÃO HUMANA:** o shutdown HTTP usa um default configurável de dez
+  segundos para drenar requests em andamento antes do fechamento das
+  dependências.
+* **EXPLÍCITO NO CHALLENGE:** a abertura interna de wallet exige o contrato
+  documentado de saldo inicial; `0.00` cria uma wallet sem movimento
+  financeiro. **PARCIALMENTE EXPLÍCITO:** reconciliation é read-only e sua
+  resposta é definida; a fronteira de rota/autenticação interna é uma decisão
+  do Loop 6.
 
-Provenance:
+A Proveniência:
 
-The recovered primary source is authoritative for the items marked
-`EXPLICIT IN CHALLENGE` and the explicit portions of items marked
-`PARTIALLY EXPLICIT`. The remaining values were selected later by human
-review for the Loop 6 implementation; they are not requirements originally
-recovered by the first SPEC restoration. The related Open Specification Gaps
-remain preserved in SPEC.md for the portions still open. This ADR records the
-selected implementation decisions and their scope for review.
+A fonte primária recuperada é autoritativa para os itens marcados como
+`EXPLÍCITO NO CHALLENGE` e para as partes explícitas dos itens marcados como
+`PARCIALMENTE EXPLÍCITO`. Os valores restantes foram selecionados depois por
+revisão humana para a implementação do Loop 6; eles não são requisitos
+originalmente recuperados pela primeira restauração da SPEC. Os gaps abertos da
+especificação relacionados permanecem preservados em SPEC.md nas partes
+que continuam abertas. Este ADR registra as decisões de implementação
+selecionadas e seu escopo para revisão.
 
-Consequences:
+Consequências:
 
-The Loop 6 adapters and composition may be reviewed against this ADR. It does
-not authorize SQS, inbox processing or outbox workers, which remain Loop 7
-scope, and it does not change the frozen financial core.
+Os adapters e a composição do Loop 6 podem ser revisados contra este ADR. Ele
+não autoriza SQS, processamento de inbox ou workers de outbox, que permanecem
+no escopo do Loop 7, e não altera o core financeiro congelado.
 
-### Loop 6 implementation conflict register
+### Registro de conflitos da implementação do Loop 6
 
-The primary challenge defines the following HTTP names and behaviors that the
-current implementation must be reconciled against. These are conformance
-findings/provenance records, not new implementation decisions in this ADR:
+O desafio primário define os seguintes nomes e comportamentos HTTP contra os
+quais a implementação atual deve ser reconciliada. Estes são registros de
+conformance/proveniência, não novas decisões de implementação neste ADR:
 
-* `externalTransactionId` versus the implementation's `externalId`;
-* `kind` versus the implementation's `type`;
-* `money` versus the implementation's `amount`;
-* `status` versus the implementation's `state`;
-* `initialBalance` versus the implementation's `openingBalance`;
-* provider identity must be authoritative from authentication and must not be
-  selected by a request body field;
-* reconciliation response fields must follow the primary contract;
-* readiness must include PostgreSQL and SQS in the completed architecture,
-  while the Loop 6 implementation currently covers only PostgreSQL.
+* `externalTransactionId` versus o `externalId` da implementação;
+* `kind` versus o `type` da implementação;
+* `money` versus o `amount` da implementação;
+* `status` versus o `state` da implementação;
+* `initialBalance` versus o `openingBalance` da implementação;
+* a identidade do provider deve ser autoritativa a partir da autenticação e
+  não deve ser selecionada por um campo do request body;
+* os campos da resposta de reconciliation devem seguir o contrato primário;
+* readiness deve incluir PostgreSQL e SQS na arquitetura concluída, enquanto a
+  implementação do Loop 6 atualmente cobre somente PostgreSQL.
 
-These differences are conformance work for the appropriate future change;
-they do not authorize changing the financial core or treating current adapter
-behavior as normative.
+Essas diferenças são trabalho de conformance para a mudança futura apropriada;
+elas não autorizam alterar o core financeiro nem tratar o comportamento atual
+do adapter como normativo.
 
-## ADR-007 — Loop 7 SQS consumer and inbox policy
+## ADR-007 — política de consumer SQS e inbox do Loop 7
 
 Status: IMPLEMENTED; REAL POSTGRESQL/LOCALSTACK EXECUTION VERIFIED
-Date: 2026-09-18
+Data: 2026-09-18
 
-Context:
+Contexto:
 
-Loop 7 integrates the FIFO wagering queue with the existing financial use case.
-The inbox must survive process restarts, and a message must not be deleted
-before the PostgreSQL transaction that records its effect commits.
+O Loop 7 integra a fila FIFO de apostas ao use case financeiro existente. O
+inbox deve sobreviver a restarts do processo, e uma mensagem não pode ser
+apagada antes do commit da transação PostgreSQL que registra seu efeito.
 
-Decision:
+Decisão:
 
-* The accepted envelope is strict JSON with `messageId`, `type`, `occurredAt`
-  and `data`. Unknown fields, missing required fields, non-RFC3339 timestamps,
-  OPENING and invalid money are malformed/permanent input failures. The
-  consumer leaves them unacknowledged so the configured SQS redrive policy
-  moves them to the DLQ after five receives.
-* `data` is translated into the same `financial.Command` processed by HTTP.
-  The command ID is generated by the consumer; the financial idempotency key
-  is `data.idempotencyKey`.
-* The application computes the lowercase SHA-256 digest of the existing
-  canonical business JSON. The idempotency key, command ID and transport
-  metadata are excluded. This digest is stored in the inbox and compared on
-  every redelivery.
-* Inbox identity is `(wager-transaction-consumer, messageId)`, enforced by
-  the existing PostgreSQL primary key. Inbox insertion, financial processing,
-  ledger/state changes, event rows and inbox completion use the same explicit
-  transaction. A committed business rejection is therefore acknowledged like
-  a success. A transaction rollback leaves no completed inbox row.
-* A completed inbox row with the same hash invokes only persisted financial
-  replay and is then acknowledged. A hash mismatch is never processed and is
-  left for DLQ redrive. An incomplete row is safely retried; financial
-  idempotency remains the second durable guard.
-* The consumer uses one sequential poll loop per process. Multiple processes
-  may consume concurrently; PostgreSQL wallet locking and financial identity
-  constraints remain the correctness mechanisms. Long polling defaults to ten
-  seconds, visibility to thirty seconds, and retry visibility is
+* O envelope aceito é JSON estrito com `messageId`, `type`, `occurredAt` e
+  `data`. Campos desconhecidos, campos obrigatórios ausentes, timestamps não
+  RFC3339, OPENING e money inválido são falhas de entrada
+  malformed/permanent. O consumer não faz acknowledgment para que a redrive
+  policy configurada do SQS mova a mensagem para a DLQ após cinco receives.
+* `data` é traduzido para o mesmo `financial.Command` processado por HTTP.
+  O command ID é gerado pelo consumer; a chave de idempotência financeira é
+  `data.idempotencyKey`.
+* A aplicação calcula o digest SHA-256 em minúsculas do JSON canônico de
+  negócio. A chave de idempotência, o command ID e os
+  metadados de transporte são excluídos. Esse digest é armazenado no inbox e
+  comparado em cada redelivery.
+* A identidade do inbox é `(wager-transaction-consumer, messageId)`, imposta
+  pela primary key existente do PostgreSQL. A inserção no inbox, o
+  processamento financeiro, as alterações de ledger/state, as event rows e a
+  conclusão do inbox usam a mesma transação explícita. Uma rejeição de negócio
+  commitada recebe acknowledgment como um sucesso. Um rollback de transação
+  não deixa uma inbox row concluída.
+* Uma row de inbox concluída com o mesmo hash invoca apenas o replay financeiro
+  replay e então recebe acknowledgment. Um mismatch de hash nunca é
+  processado e permanece para redrive da DLQ. Uma row incompleta sofre retry
+  com segurança; a idempotência financeira continua sendo a segunda proteção
+  durável.
+* O consumer usa um poll loop sequencial por processo. Múltiplos processos
+  podem consumir concorrentemente; locking de wallet do PostgreSQL e
+  constraints de identidade financeira continuam sendo os mecanismos de
+  correção. Long polling tem default de dez segundos, visibility de trinta
+  segundos e a visibility de retry é
   `min(5s * 2^(receiveCount-1), visibility-1s)`.
-* The Fx `OnStart` context bounds startup only. The consumer owns a separate,
-  explicitly cancellable run context; `OnStop` owns its cancellation and waits
-  for the polling goroutine before HTTP or PostgreSQL dependencies are stopped.
-* Producers use the wallet ID as `MessageGroupId` and the envelope message ID
-  as `MessageDeduplicationId`. FIFO deduplication only reduces broker traffic;
-  it is not relied on for financial correctness.
-* SQS deletion occurs only after `ProcessMessage` returns successfully. Delete
-  failures leave the message eligible for redelivery. Transient processing
-  errors change visibility with backoff. Shutdown cancels polling and
-  in-flight database work, then releases the receipt handle for redelivery.
-* Readiness checks queue discovery and queue attributes in addition to
-  PostgreSQL. Queue clients use configured AWS credentials and endpoint;
-  LocalStack defaults remain safe local test credentials.
-* Broker authorization is an infrastructure responsibility. The deployment
-  grants the consumer only queue discovery/readiness, receive, delete and
-  visibility-change actions on the main queue. Producers/tests and provisioners
-  use separate least-privilege roles; the consumer has no DLQ access unless an
-  operational responsibility explicitly requires it. The concrete AWS IAM
-  policy and the LocalStack limitation are recorded in
+* O contexto de `OnStart` do Fx limita somente o startup. O consumer possui um
+  contexto de execução explicitamente cancelável; `OnStop` possui seu
+  cancelamento e aguarda a goroutine de polling antes que as dependências HTTP
+  ou PostgreSQL sejam paradas.
+* Producers usam o ID da wallet como `MessageGroupId` e o message ID do envelope
+  como `MessageDeduplicationId`. A deduplicação FIFO apenas reduz tráfego do
+  broker; ela não é usada como dependência da correção financeira.
+* A deleção do SQS ocorre somente depois que `ProcessMessage` retorna com
+  sucesso. Falhas de delete deixam a mensagem elegível para redelivery. Erros transitórios de
+  processamento alteram a visibility com backoff. Shutdown cancela o polling
+  e o trabalho de banco em andamento e então libera o receipt handle para
+  redelivery.
+* Readiness verifica descoberta da fila e atributos da fila além do
+  PostgreSQL. Queue clients usam as credenciais AWS e o endpoint configurados;
+  os defaults do LocalStack continuam sendo credenciais locais seguras de
+  teste.
+* A autorização do broker é responsabilidade da infraestrutura. O deployment
+  concede ao consumer somente ações de descoberta/readiness da fila, receive,
+  delete e alteração de visibility na fila principal. Producers/testes e
+  provisioners usam roles separadas de least privilege; o consumer não tem
+  acesso à DLQ, a menos que uma responsabilidade operacional o exija
+  explicitamente. A policy concreta de AWS IAM e a limitação do LocalStack
+  estão registradas em
   `infra/aws/sqs-access-policy.md`.
 
-Consequences:
+Consequências:
 
-The message path is equivalent to HTTP at the application boundary and does
-not duplicate financial rules. A transaction identity uniqueness race on a
-different wallet rolls back the inbox and every financial write in the same SQL
-transaction and returns `ErrIdempotencyConflict`; it is never resolved through
-an independent financial transaction followed by a separate inbox completion.
-The message consequently remains unacknowledged and follows the permanent
-failure/redrive policy. Conditional integration tests are not evidence by
-themselves; real execution is reported separately under the Integration
-Evidence Gate.
+O caminho da mensagem é equivalente ao HTTP na fronteira da aplicação e não
+duplica regras financeiras. Uma race de unicidade da identidade da transação em
+uma wallet diferente faz rollback do inbox e de toda escrita financeira na
+mesma transação SQL e retorna `ErrIdempotencyConflict`; ela nunca é resolvida
+por uma transação financeira independente seguida de uma conclusão separada do
+inbox. A mensagem consequentemente permanece sem acknowledgment e segue a
+política de falha permanente/redrive. Testes de integração condicionais não
+são evidência por si só; a execução real é reportada separadamente no
+Integration Evidence Gate.
 
-## ADR-008 — Loop 8 pending-reference worker
+## ADR-008 — worker de pending references do Loop 8
 
 Status: COMPLETED — CHECKPOINTED
-Date: 2026-09-18
+Data: 2026-09-18
 
-Decision:
+Decisão:
 
-* A reversal whose non-empty reference is not yet present is committed as
-  `PENDING_REFERENCE`. An absent reference field is a terminal rejection with
-  `REFERENCE_REQUIRED`; it is not retryable because no future identity can be
-  resolved.
-* Pending work stores `reference_attempts`, `reference_next_attempt_at` and an
-  optional `failure_code` on the wager transaction. The retry policy defaults
-  to ten attempts with a one-second exponential base backoff and is loaded
-  from `REFERENCE_MAX_ATTEMPTS`, `REFERENCE_BACKOFF` and
+* Uma reversão cuja referência não vazia ainda não está presente faz commit
+  `PENDING_REFERENCE`. Um campo de referência ausente é uma rejeição terminal
+  com `REFERENCE_REQUIRED`; não é retryable porque nenhuma identidade futura
+  pode ser resolvida.
+* O trabalho pendente armazena `reference_attempts`,
+  `reference_next_attempt_at` e um
+  `failure_code` opcional na wager transaction. A política de retry tem
+  default de dez tentativas com backoff exponencial base de um segundo e é
+  carregada de `REFERENCE_MAX_ATTEMPTS`, `REFERENCE_BACKOFF` e
   `REFERENCE_POLL_INTERVAL`.
-* The Fx reference worker claims one due row at a time with PostgreSQL
-  `FOR UPDATE SKIP LOCKED`. Every resolution, terminal rejection, wallet
-  lock, ledger entry, transaction result and event row is committed in the
-  same SQL transaction. The worker owns an explicitly cancellable lifecycle
-  context and reconstructs all state from PostgreSQL after restart.
-* A processed compatible reference resolves the reversal. A pending reference
-  is retried until exhaustion. A terminal unsuccessful reference is rejected
-  with `REFERENCE_NOT_SUCCESSFUL`; an exhausted missing or unresolved
-  reference is rejected with the stable `REFERENCE_NOT_FOUND` or
-  `REFERENCE_NOT_RESOLVED` code. Reference mismatches use `REFERENCE_INVALID`.
-* Pending-reference and rejection events are persisted transactionally. This
-  loop does not publish outbox rows; publication remains Loop 9 scope.
-* Reference identity coordination uses a PostgreSQL transaction-scoped
-  advisory lock derived from `(providerId, externalTransactionId)`. The
-  normal transaction-creation path and the pending worker acquire the same
-  lock. This serializes reference confirmation against a terminal
-  `REFERENCE_NOT_FOUND` decision across independent instances without
-  introducing a global wallet/provider lock. The pending row is claimed before
-  the reference lock; the reference-creation path does not claim pending rows,
-  so the lock order has no cycle.
+* O reference worker do Fx faz claim de uma row vencida por vez com
+  PostgreSQL
+  `FOR UPDATE SKIP LOCKED`. Toda resolução, rejeição terminal, lock da wallet,
+  entrada do ledger, resultado da transação e event row fazem commit na mesma
+  transação SQL. O worker possui um contexto de lifecycle explicitamente
+  cancelável e reconstrói todo o estado a partir do PostgreSQL após restart.
+* Uma referência compatível processada resolve a reversão. Uma referência
+  pendente sofre retry até exhaustion. Uma referência terminal não bem-sucedida é
+  rejeitada com `REFERENCE_NOT_SUCCESSFUL`; uma referência ausente ou não
+  resolvida após exhaustion é rejeitada com o código estável
+  `REFERENCE_NOT_FOUND` ou `REFERENCE_NOT_RESOLVED`. Mismatches de referência
+  usam `REFERENCE_INVALID`.
+* Eventos de pending reference e de rejeição são persistidos
+  transacionalmente. Este loop não publica outbox rows; a publicação continua
+  no escopo do Loop 9.
+* A coordenação da identidade da referência usa um advisory lock do PostgreSQL
+  com escopo de transação, derivado de `(providerId, externalTransactionId)`.
+  O caminho normal de criação de transação e o worker de pending references
+  adquirem o mesmo lock. Isso serializa a confirmação da referência contra uma
+  decisão terminal `REFERENCE_NOT_FOUND` entre instâncias independentes sem
+  introduzir um lock global de wallet/provider. A pending row recebe claim
+  antes do reference lock; o caminho de criação da referência não faz claim de
+  pending rows, portanto a ordem dos locks não forma ciclo.
 
-## ADR-009 — Transactional outbox publisher
-
-Status: COMPLETED — CHECKPOINTED
-Date: 2026-09-18
-
-Decision:
-
-* Outbox rows are published asynchronously to the FIFO SQS queue configured by
-  `SQS_EVENT_QUEUE`, defaulting to `wager-events.fifo`. The event envelope is
-  built from the persisted row and contains eventId, eventType, aggregateId,
-  correlationId, optional causationId, occurredAt, version and the immutable
-  JSON data snapshot.
-* PostgreSQL claims use `FOR UPDATE SKIP LOCKED`, a `claimed_at` lease and a
-  persisted `claim_token`. A publisher may mark or retry only the claim token
-  it owns, so an abandoned publisher cannot overwrite a recovered claim.
-* Claims increment attempts before publication. Failed publication returns the
-  row to PENDING with exponential backoff; reaching the configured maximum
-  changes it to FAILED for durable operator-visible retention. A successful
-  publication changes it to PUBLISHED. Ambiguous publication is retried with
-  the same eventId and SQS MessageDeduplicationId.
-* Outbox rows receive a durable database ordering ID when created. A row is
-  eligible only when every earlier row for the same aggregate is PUBLISHED.
-  This prevents a later event from bypassing a pending, claimed, retryable or
-  FAILED predecessor. A FAILED predecessor therefore blocks later events for
-  that aggregate until an operator repairs or republishes it; this preserves
-  the ordering guarantee rather than silently publishing an incomplete
-  aggregate history. Different aggregates remain eligible in parallel.
-* MessageGroupId is the aggregate ID. It preserves broker ordering only after
-  the database claim protocol has established publication order; SQS FIFO does
-  not reorder messages sent by competing publishers. This destination,
-  ordering policy and schedule are architectural decisions, not domain
-  requirements recovered from the challenge.
-* The worker owns an explicit lifecycle context and stops before PostgreSQL is
-  closed. Controlled process-crash and failure attacks are verified in
-  ADR-011.
-
-## ADR-010 — Loop 10 observability
+## ADR-009 — publisher de outbox transacional
 
 Status: COMPLETED — CHECKPOINTED
-Date: 2026-09-18
+Data: 2026-09-18
 
-Decision:
+Decisão:
 
-* The process uses the standard-library `slog` JSON handler. HTTP requests
-  receive or generate an `X-Correlation-ID`, which is returned in the response
-  and propagated through request logs. External values are preserved only when
-  they are non-empty, at most 128 ASCII bytes and contain `[A-Za-z0-9._:-]`;
-  invalid values are replaced with a generated ID. SQS message logs use the
-  envelope `messageId` as the correlation identifier when no separate
-  transport correlation exists.
-* Structured logs include identifiers available at each boundary: correlation
-  ID, message ID, transaction ID, wallet ID and provider ID. They do not log
-  credentials, tokens or complete financial payloads.
-* The internal metrics registry exposes Prometheus-compatible text at
-  `GET /metrics`. Counters cover processing status, separately labelled
-  `sqs_inbox` and `http_idempotency` duplicates, retries by a bounded
-  component set, receive-exhaustion redrive candidates, explicitly
-  classifiable concurrency conflicts, idempotency conflicts and
-  reconciliation divergence. It also exposes processing latency and the age
-  of the oldest pending/claimed outbox event. IDs are not metric labels.
-* `wager_sqs_redrive_candidate_total` is incremented when a failed message
-  reaches the configured `SQS_MAX_RECEIVE_COUNT`; the application does not
-  observe the broker's subsequent DLQ insertion, so the broker remains
-  authoritative for actual redrive. The metric is not an IAM or exactly-once
-  claim. Sequential idempotency conflicts are reported separately and do not
-  imply a concurrency conflict. The current wallet-locking protocol exposes
-  no independent concurrency-conflict signal, so that counter remains zero
-  until a classifiable serialization, version or claim conflict is observed.
-* Fx lifecycle diagnostics use its supported no-op event logger so the
-  operational stream remains JSON-only; application lifecycle records still
-  use the `slog` JSON handler. This suppresses Fx's textual `[Fx]` stream and
-  does not change lifecycle hooks.
-* Existing `/health/live` and `/health/ready` endpoints remain separate. The
-  readiness contract continues to require PostgreSQL and SQS; metrics are not
-  used as a readiness dependency.
+* Rows do outbox são publicadas de forma assíncrona na fila SQS FIFO
+  configurada por `SQS_EVENT_QUEUE`, com default `wager-events.fifo`. O
+  envelope do evento é construído a partir da row persistida e contém eventId,
+  eventType, aggregateId, correlationId, causationId opcional, occurredAt,
+  version e o snapshot JSON imutável de data.
+* Claims PostgreSQL usam `FOR UPDATE SKIP LOCKED`, um lease `claimed_at` e um
+  `claim_token` persistido. Um publisher só pode marcar ou fazer retry do claim
+  token que possui, portanto um publisher abandonado não pode sobrescrever um
+  claim recuperado.
+* Claims incrementam attempts antes da publicação. Uma publicação falha retorna
+  a row retorna a PENDING com backoff exponencial; atingir o máximo configurado
+  muda seu estado para FAILED, mantendo-a de forma durável e visível ao
+  operador. Uma publicação bem-sucedida muda o estado para PUBLISHED. Uma
+  publicação ambígua sofre retry com o mesmo eventId e
+  SQS MessageDeduplicationId.
+* Rows do outbox recebem um ordering ID durável do banco quando são criadas. Uma
+  row só é elegível quando toda row anterior do mesmo aggregate está em
+  PUBLISHED. Isso impede que um evento posterior ultrapasse um predecessor
+  pending, claimed, retryable ou FAILED. Um predecessor FAILED, portanto,
+  bloqueia eventos posteriores desse aggregate até que um operador o repare ou
+  republique; isso preserva a garantia de ordering em vez de publicar
+  silenciosamente um histórico incompleto do aggregate. Aggregates diferentes
+  continuam elegíveis em paralelo.
+* MessageGroupId é o ID do aggregate. Ele preserva a ordenação do broker somente
+  depois que o protocolo de claim do banco estabeleceu a ordem de publicação;
+  o SQS FIFO não reordena mensagens enviadas por publishers concorrentes. Esse
+  destino, a policy de ordering e o schedule são decisões arquiteturais, não
+  requisitos de domínio recuperados do desafio.
+* O worker possui um contexto explícito de lifecycle e para antes que o
+  PostgreSQL seja fechado. Ataques controlados de crash de processo e de falha
+  são verificados no ADR-011.
 
-Consequences:
-
-Observability is process-local and diagnostic; it is not a financial state
-store. Counters reset on process restart, while financial and outbox state
-remain PostgreSQL-backed. OpenTelemetry and dashboards remain optional and
-outside this loop. Failure injection is documented and verified in ADR-011.
-
-## ADR-011 — Loop 11 failure engineering
+## ADR-010 — observabilidade do Loop 10
 
 Status: COMPLETED — CHECKPOINTED
-Date: 2026-09-18
+Data: 2026-09-18
 
-Decision:
+Decisão:
 
-* Failure tests use real PostgreSQL and LocalStack wherever the attacked
-  boundary requires them. A PostgreSQL trigger scoped to a test-only
-  correlation identity injects an error on the final outbox insert; because
-  wallet, transaction and ledger writes have already been attempted, it proves
-  rollback of the complete SQL transaction rather than a validation shortcut.
-  A separate child process is killed while that trigger holds a transaction
-  advisory lock, proving the same rollback behavior for a real process crash
-  before commit.
-* Consumer and outbox crash windows use isolated child test processes. The
-  consumer child is terminated only after durable inbox completion and before
-  `DeleteMessage`; a restarted consumer redelivers safely through the durable
-  inbox. The outbox child is terminated only after real `SendEvent` succeeds
-  and before `MarkPublished`; lease recovery republishes the same persisted
-  event identity and payload.
-* Temporary dependency faults are injected at the PostgreSQL/SQS client
-  boundary and recovery is then executed against the real service. This
-  demonstrates transaction rollback and durable retry/recovery without
-  changing production code or treating broker FIFO deduplication as financial
-  idempotency.
+* O processo usa o handler JSON `slog` da standard library. Requests HTTP
+  recebem ou geram um `X-Correlation-ID`, que é devolvido na response e
+  propagado pelos logs do request. Valores externos só são preservados quando
+  não vazios, têm no máximo 128 bytes ASCII e contêm `[A-Za-z0-9._:-]`; valores
+  inválidos são substituídos por um ID gerado. Logs de mensagens SQS usam o
+  `messageId` do envelope como identificador de correlação quando não existe
+  correlação de transporte separada.
+* Logs estruturados incluem os identificadores disponíveis em cada fronteira:
+  correlation ID, message ID, transaction ID, wallet ID e provider ID. Eles
+  não registram credenciais, tokens ou payloads financeiros completos.
+* O registry interno de metrics expõe texto compatível com Prometheus em
+  `GET /metrics`. Counters cobrem status de processamento, duplicatas
+  separadas por `sqs_inbox` e `http_idempotency`, retries por um conjunto
+  limitado de components, candidatos a redrive por receive exhaustion,
+  conflitos de concorrência explicitamente classificáveis, conflitos de
+  idempotência e divergência de reconciliation. Ele também expõe a latência de
+  processamento e a idade do evento de outbox pending/claimed mais antigo. IDs
+  não são labels de metrics.
+* `wager_sqs_redrive_candidate_total` é incrementada quando uma mensagem com
+  falha atinge o `SQS_MAX_RECEIVE_COUNT` configurado; a aplicação não observa
+  a posterior inserção na DLQ pelo broker, portanto o broker continua sendo a
+  autoridade sobre o redrive efetivo. A métrica não é uma alegação de IAM nem
+  de exactly-once. Conflitos de idempotência sequenciais são reportados
+  separadamente e não implicam conflito de concorrência. O protocolo atual de
+  locking de wallet não expõe um sinal independente de conflito de
+  concorrência, portanto esse counter permanece em zero até que um conflito de
+  serialização, versão ou claim classificável seja observado.
+* Os diagnósticos de lifecycle do Fx usam seu event logger no-op suportado para
+  que o stream operacional permaneça somente JSON; registros de lifecycle da
+  aplicação continuam usando o handler JSON `slog`. Isso suprime o stream
+  textual `[Fx]` do Fx e não altera os lifecycle hooks.
+* Os endpoints existentes `/health/live` e `/health/ready` permanecem
+  separados. O contrato de readiness continua exigindo PostgreSQL e SQS;
+  metrics não são usadas como dependência de readiness.
 
-Consequences:
+Consequências:
 
-These are controlled process-failure and dependency-failure experiments, not
-host power-loss or container-kill simulations. The implementation continues to
-claim at-least-once event delivery: an event can be sent more than once after
-an ambiguous publisher failure, always with its stable event ID. Existing
-durable inbox, financial idempotency, ledger and outbox constraints remain the
-correction mechanisms; the failure harness adds no production failpoint.
+Observabilidade é process-local e diagnóstica; não é um state store financeiro.
+Counters zeram no restart do processo, enquanto o estado financeiro e do
+outbox continua respaldado pelo PostgreSQL. OpenTelemetry e dashboards
+continuam opcionais e fora deste loop. Failure injection está documentada e
+verificada no ADR-011.
+
+## ADR-011 — failure engineering do Loop 11
+
+Status: COMPLETED — CHECKPOINTED
+Data: 2026-09-18
+
+Decisão:
+
+* Testes de falha usam PostgreSQL e LocalStack reais sempre que a fronteira
+  atacada exige isso. Um trigger PostgreSQL limitado a uma identidade de
+  correlação exclusiva do teste injeta um erro na inserção final do outbox;
+  como as escritas de wallet, transaction e ledger já foram tentadas, isso
+  prova o rollback da transação SQL completa, e não um atalho de validação. Um
+  processo filho separado é encerrado enquanto esse trigger mantém um advisory
+  lock transacional, provando o mesmo comportamento de rollback para um crash
+  real de processo antes do commit.
+* Janelas de crash do consumer e do outbox usam processos filhos de teste
+  isolados. O processo filho do consumer só é encerrado depois da conclusão
+  durável do inbox e antes de `DeleteMessage`; um consumer reiniciado faz
+  redelivery com segurança por meio do inbox durável. O processo filho do
+  outbox só é encerrado depois que `SendEvent` real tem sucesso e antes de
+  `MarkPublished`; o lease recovery republica a mesma identidade e payload de
+  evento persistidos.
+* Falhas temporárias de dependência são injetadas na fronteira do client
+  PostgreSQL/SQS e o recovery é então executado contra o serviço real. Isso
+  demonstra rollback transacional e retry/recovery durável sem alterar código
+  de produção nem tratar a deduplicação FIFO do broker como idempotência
+  financeira.
+
+Consequências:
+
+Estes são experimentos controlados de falha de processo e de dependência, não
+simulações de perda de energia do host ou kill de container. A implementação
+continua afirmando entrega de eventos at-least-once: um evento pode ser enviado
+mais de uma vez após uma falha ambígua do publisher, sempre com seu event ID
+estável. As constraints existentes de inbox durável, idempotência financeira,
+ledger e outbox continuam sendo os mecanismos de correção; o harness de falha
+não adiciona failpoint de produção.
 
 ---
 
-# 35. Current Status
+# 35. Status atual
 
-Architecture status:
+Status da arquitetura:
 
 ```text
 LOOP 12 IMPLEMENTED — PENDING HUMAN REVIEW
 ```
 
-Implementation status must not be inferred from this document.
+O status da implementação não deve ser inferido deste documento.
 
-Only verified behavior should be described as implemented.
+Somente comportamento verificado deve ser descrito como implementado.

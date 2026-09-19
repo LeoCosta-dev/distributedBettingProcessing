@@ -1,4 +1,4 @@
-# Looping Engineering Runbook
+# Runbook de engenharia dos loops
 
 Este documento define o protocolo obrigatório para execução dos loops descritos em `TASKS.md`.
 
@@ -6,11 +6,11 @@ O objetivo é permitir execução incremental assistida por agente, mantendo cad
 
 ---
 
-## 1. Execution Protocol
+## 1. Protocolo de execução
 
 Execute somente o próximo loop pendente definido em `TASKS.md`.
 
-### Context Loading
+### Carregamento de contexto
 
 Antes de qualquer implementação:
 
@@ -26,7 +26,7 @@ Não implemente antes de compreender o contexto existente.
 
 ---
 
-## 2. Scope Control
+## 2. Controle de escopo
 
 Trabalhe exclusivamente no escopo do próximo loop pendente.
 
@@ -45,7 +45,7 @@ Se uma alteração fora do loop for indispensável para sua conclusão, explique
 
 ---
 
-## 3. Sources of Truth
+## 3. Fontes de verdade
 
 Durante a execução, considere:
 
@@ -84,7 +84,7 @@ Este documento controla **como cada loop deve ser executado e validado**.
 
 ---
 
-## 4. Engineering Rules
+## 4. Regras de engenharia
 
 Durante a implementação:
 
@@ -107,7 +107,7 @@ Quando uma decisão não estiver explicitamente coberta pela documentação:
 
 ---
 
-## 5. Financial Invariants
+## 5. Invariantes financeiras
 
 As garantias financeiras possuem prioridade sobre conveniência de implementação.
 
@@ -134,7 +134,7 @@ Uma solução correta em uma única instância não deve ser considerada suficie
 
 ---
 
-## 6. Implementation
+## 6. Implementação
 
 Implemente somente o código de produção e os testes necessários para satisfazer integralmente o loop atual.
 
@@ -157,7 +157,7 @@ Não considere apenas a existência de código como evidência de que uma garant
 
 ---
 
-## 7. Database Guarantees
+## 7. Garantias do banco de dados
 
 Quando o loop envolver PostgreSQL, migrations ou persistência:
 
@@ -175,7 +175,7 @@ Garantias críticas não devem depender exclusivamente de validação na camada 
 
 ---
 
-## 8. Messaging Guarantees
+## 8. Garantias de messaging
 
 Quando o loop envolver SQS, inbox, outbox ou processamento assíncrono:
 
@@ -196,7 +196,7 @@ Nunca trate entrega única como premissa de corretude.
 
 ---
 
-## 9. Authentication and Authorization
+## 9. Autenticação e autorização
 
 Quando o loop envolver autenticação ou autorização:
 
@@ -212,7 +212,7 @@ Testes devem demonstrar tanto acesso permitido quanto acesso proibido quando apl
 
 ---
 
-## 10. Testing Strategy
+## 10. Estratégia de testes
 
 Os testes devem demonstrar invariantes, não apenas aumentar cobertura.
 
@@ -243,7 +243,7 @@ Não altere uma garantia correta apenas para simplificar um teste.
 
 ---
 
-## 11. Quality Gates
+## 11. Quality gates
 
 Antes de declarar o loop implementado, execute todos os Quality Gates aplicáveis.
 
@@ -324,7 +324,7 @@ não deve ser apresentada como se tivesse sido exercitada.
 
 ---
 
-## 12. Verification Before Completion
+## 12. Verificação antes da conclusão
 
 Antes de atualizar `TASKS.md`, confronte novamente a implementação com o escopo do loop.
 
@@ -356,7 +356,7 @@ Se uma tarefa estiver parcialmente implementada, ela deve permanecer pendente.
 
 ---
 
-## 14. Final Report
+## 14. Relatório final
 
 Ao terminar a implementação do loop, apresente um relatório para revisão humana.
 
@@ -378,7 +378,7 @@ Informe:
 - trade-offs introduzidos;
 - qualquer decisão não explicitamente prevista pela documentação.
 
-### Verification
+### Verificação
 
 Informe individualmente o resultado de:
 
@@ -394,7 +394,7 @@ Não use apenas "todos os testes passaram".
 
 Informe quais categorias de verificação foram efetivamente executadas.
 
-### Risks / Review Points
+### Riscos / pontos para revisão
 
 Informe explicitamente:
 
@@ -432,7 +432,7 @@ O estado esperado neste momento é:
 
 ---
 
-## 16. Corrections After Human Review
+## 16. Correções após a Human Review
 
 Caso a revisão humana solicite correções:
 
@@ -451,7 +451,7 @@ Quality Gates automatizados não substituem revisão das invariantes.
 
 ---
 
-## 17. Git Checkpoint
+## 17. Checkpoint Git
 
 O agente executor do loop não deve criar commit automaticamente.
 
@@ -472,7 +472,7 @@ Não inclua alterações não relacionadas no checkpoint.
 
 ---
 
-## 18. Definition of Loop Completion
+## 18. Definição de conclusão do loop
 
 Um loop somente está completamente concluído quando:
 
@@ -500,7 +500,7 @@ Somente então o próximo loop pode ser iniciado.
 
 ---
 
-## 19. Next Loop
+## 19. Próximo loop
 
 Depois que o checkpoint do loop atual tiver sido criado, pare.
 
@@ -514,7 +514,7 @@ A instrução mínima para iniciar uma nova execução é:
 
 ---
 
-## Core Principle
+## Princípio central
 
 O objetivo do Looping Engineering neste projeto não é maximizar a quantidade de código produzida por um agente.
 
