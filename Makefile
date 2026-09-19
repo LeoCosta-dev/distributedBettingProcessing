@@ -70,14 +70,17 @@ INTEGRATION_PACKAGES = \
 .PHONY: help up down bootstrap migrate-up migrate-down run health ready \
 	test test-race vet check fmt-check fmt integration failure-tests logs \
 	build clean clean-all require-compose require-go require-gofmt \
-	require-curl require-migrate migrate-check require-schema wait-infra
+	require-curl require-migrate migrate-check install-go-tools doctor \
+	require-schema wait-infra
 
 help:
 	@printf '%s\n' \
 		'make up             sobe PostgreSQL, LocalStack e Keycloak' \
 		'make down           para a stack sem remover volumes' \
 		'make bootstrap      aguarda PostgreSQL e aplica migrations' \
-		'make migrate-check  verifica a CLI migrate sem instalar nada' \
+		'make doctor         verifica as dependências sem instalar nada' \
+		'make install-go-tools instala ferramentas auxiliares Go' \
+		'make migrate-check  verifica migrate e pergunta antes de instalar' \
 		'make migrate-up     aplica migrations com a CLI migrate' \
 		'make migrate-down   reverte uma migration com a CLI migrate' \
 		'make run            inicia a API no host' \
@@ -115,15 +118,79 @@ require-gofmt:
 require-curl:
 	@command -v curl >/dev/null 2>&1 || { echo 'curl é necessário para health e ready.' >&2; exit 1; }
 
+doctor:
+	@set -eu; \
+	status=0; \
+	check_bin() { \
+		label="$$1"; command_name="$$2"; \
+		if command -v "$$command_name" >/dev/null 2>&1; then \
+			printf 'PASS    %s (%s)\n' "$$label" "$$(command -v "$$command_name")"; \
+		else \
+			printf 'MISSING %s\n' "$$label"; status=1; \
+		fi; \
+	}; \
+	check_bin 'go' '$(GO)'; \
+	check_bin 'gofmt' '$(GOFMT)'; \
+	check_bin 'make' 'make'; \
+	check_bin 'curl' 'curl'; \
+	check_bin 'migrate' 'migrate'; \
+	compose_ok=0; \
+	if [ -n '$(COMPOSE)' ]; then \
+		set -- $(COMPOSE); \
+		if command -v "$$1" >/dev/null 2>&1 && "$$@" version >/dev/null 2>&1; then \
+			printf 'PASS    Compose (%s)\n' '$(COMPOSE)'; compose_ok=1; \
+		fi; \
+	fi; \
+	if [ $$compose_ok -eq 0 ]; then printf 'MISSING Compose (Podman Compose ou Docker Compose)\n'; status=1; fi; \
+	exit $$status
+
+install-go-tools: require-go require-gofmt
+	@set -eu; \
+	go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest; \
+	gobin="$$(go env GOBIN)"; \
+	gopath="$$(go env GOPATH)"; \
+	if [ -n "$$gobin" ] && [ -x "$$gobin/migrate" ]; then migrate_bin="$$gobin/migrate"; \
+	elif [ -x "$$gopath/bin/migrate" ]; then migrate_bin="$$gopath/bin/migrate"; \
+	else echo 'A instalação terminou, mas o binário migrate não foi encontrado em GOBIN/GOPATH/bin.' >&2; exit 1; fi; \
+	"$$migrate_bin" -version; \
+	if command -v migrate >/dev/null 2>&1; then \
+		echo "migrate disponível no PATH: $$(command -v migrate)"; \
+	else \
+		echo "migrate instalado em $$migrate_bin, mas não está no PATH."; \
+		echo 'Execute: export PATH="$$(go env GOPATH)/bin:$$PATH"'; \
+	fi
+
 migrate-check:
-	@if ! command -v migrate >/dev/null 2>&1; then \
-		echo 'A CLI migrate não está disponível no PATH.' >&2; \
-		echo 'As migrations são versionadas no repositório, mas o runner não é embutido no projeto.' >&2; \
-		echo 'Instale/configure golang-migrate/migrate oficialmente antes de executar bootstrap ou migrate-up.' >&2; \
-		echo 'Nenhum target faz download automático ou altera a máquina.' >&2; \
+	@set -eu; \
+	if command -v migrate >/dev/null 2>&1; then \
+		echo "migrate encontrado em $$(command -v migrate)"; \
+		exit 0; \
+	fi; \
+	echo 'A CLI migrate não está disponível no PATH.' >&2; \
+	echo 'As migrations são versionadas no repositório, mas o runner não é embutido no projeto.' >&2; \
+	if [ ! -t 0 ] || [ ! -t 1 ]; then \
+		echo 'Ambiente não interativo: nenhuma instalação foi iniciada.' >&2; \
+		echo 'Execute make install-go-tools após confirmar que go e gofmt estão no PATH.' >&2; \
+		echo "Instalação manual: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest" >&2; \
+		echo 'Se necessário, inclua $$(go env GOPATH)/bin no PATH.' >&2; \
 		exit 1; \
 	fi; \
-	echo "migrate encontrado em $$(command -v migrate)"
+	printf 'Deseja instalar agora? [y/N] '; \
+	answer=''; \
+	if IFS= read -r answer; then :; fi; \
+	case "$$answer" in \
+		y|Y) \
+			$(MAKE) install-go-tools; \
+			exit 0; \
+			;; \
+		*) \
+			echo 'Nenhuma instalação foi iniciada.' >&2; \
+			echo 'Execute make install-go-tools ou instale manualmente:' >&2; \
+			echo "go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest" >&2; \
+			echo 'Se necessário, inclua $$(go env GOPATH)/bin no PATH.' >&2; \
+			exit 1 \
+			;; \
+	esac
 
 require-migrate: migrate-check
 
@@ -159,10 +226,24 @@ bootstrap: require-compose require-migrate
 	@$(MAKE) migrate-up
 
 migrate-up: require-migrate
-	@DATABASE_URL='$(MIGRATE_DATABASE_URL)' migrate -path migrations -database "$(MIGRATE_DATABASE_URL)" up
+	@set -eu; \
+	if command -v migrate >/dev/null 2>&1; then migrate_bin="$$(command -v migrate)"; \
+	else gopath="$$(go env GOPATH)"; gobin="$$(go env GOBIN)"; \
+		if [ -n "$$gobin" ] && [ -x "$$gobin/migrate" ]; then migrate_bin="$$gobin/migrate"; \
+		elif [ -x "$$gopath/bin/migrate" ]; then migrate_bin="$$gopath/bin/migrate"; \
+		else echo 'migrate não foi encontrado no PATH nem em GOBIN/GOPATH/bin.' >&2; exit 1; fi; \
+	fi; \
+	DATABASE_URL='$(MIGRATE_DATABASE_URL)' "$$migrate_bin" -path migrations -database "$(MIGRATE_DATABASE_URL)" up
 
 migrate-down: require-migrate
-	@DATABASE_URL='$(MIGRATE_DATABASE_URL)' migrate -path migrations -database "$(MIGRATE_DATABASE_URL)" down 1
+	@set -eu; \
+	if command -v migrate >/dev/null 2>&1; then migrate_bin="$$(command -v migrate)"; \
+	else gopath="$$(go env GOPATH)"; gobin="$$(go env GOBIN)"; \
+		if [ -n "$$gobin" ] && [ -x "$$gobin/migrate" ]; then migrate_bin="$$gobin/migrate"; \
+		elif [ -x "$$gopath/bin/migrate" ]; then migrate_bin="$$gopath/bin/migrate"; \
+		else echo 'migrate não foi encontrado no PATH nem em GOBIN/GOPATH/bin.' >&2; exit 1; fi; \
+	fi; \
+	DATABASE_URL='$(MIGRATE_DATABASE_URL)' "$$migrate_bin" -path migrations -database "$(MIGRATE_DATABASE_URL)" down 1
 
 run: require-go
 	@DATABASE_URL='$(MIGRATE_DATABASE_URL)' \
