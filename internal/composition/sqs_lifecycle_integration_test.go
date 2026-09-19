@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -28,7 +29,7 @@ import (
 )
 
 func TestFxApplicationConsumerSurvivesStartupContextAndStopsPolling(t *testing.T) {
-	databaseURL := os.Getenv("DATABASE_URL")
+	databaseURL := newFxIsolatedOutboxTestDatabaseURL(t)
 	endpoint := os.Getenv("AWS_ENDPOINT_URL")
 	if databaseURL == "" || endpoint == "" {
 		t.Skip("DATABASE_URL and AWS_ENDPOINT_URL are required")
@@ -205,7 +206,7 @@ func TestFxApplicationOutboxWorkerUsesClaimOneAfterStartup(t *testing.T) {
 	if os.Getenv("RUN_OUTBOX_FX_INTEGRATION") != "1" {
 		t.Skip("RUN_OUTBOX_FX_INTEGRATION=1 is required")
 	}
-	databaseURL := os.Getenv("DATABASE_URL")
+	databaseURL := newFxIsolatedOutboxTestDatabaseURL(t)
 	endpoint := os.Getenv("AWS_ENDPOINT_URL")
 	if databaseURL == "" || endpoint == "" {
 		t.Skip("DATABASE_URL and AWS_ENDPOINT_URL are required")
@@ -224,10 +225,8 @@ func TestFxApplicationOutboxWorkerUsesClaimOneAfterStartup(t *testing.T) {
 	}
 	awsCfg.BaseEndpoint = aws.String(endpoint)
 	api := awssqs.NewFromConfig(awsCfg)
-	queue, err := api.GetQueueUrl(ctx, &awssqs.GetQueueUrlInput{QueueName: aws.String("wager-events.fifo")})
-	if err != nil {
-		t.Fatalf("get outbox queue: %v", err)
-	}
+	wagerQueueName, _ := createFxIntegrationQueue(ctx, t, api)
+	queueName, queueURL := createFxIntegrationQueue(ctx, t, api)
 
 	for key, value := range map[string]string{
 		"DATABASE_URL":                         databaseURL,
@@ -235,9 +234,9 @@ func TestFxApplicationOutboxWorkerUsesClaimOneAfterStartup(t *testing.T) {
 		"AWS_ENDPOINT_URL":                     endpoint,
 		"AWS_ACCESS_KEY_ID":                    accessKeyID,
 		"AWS_SECRET_ACCESS_KEY":                secretAccessKey,
-		"SQS_WAGER_QUEUE":                      "unused-" + uuid.New().String() + ".fifo",
+		"SQS_WAGER_QUEUE":                      wagerQueueName,
 		"SQS_WAGER_DLQ":                        "unused-dlq-" + uuid.New().String() + ".fifo",
-		"SQS_EVENT_QUEUE":                      "wager-events.fifo",
+		"SQS_EVENT_QUEUE":                      queueName,
 		"SQS_VISIBILITY_TIMEOUT_SECONDS":       "2",
 		"SQS_WAIT_TIME_SECONDS":                "1",
 		"SQS_RETRY_VISIBILITY_BACKOFF_SECONDS": "0",
@@ -256,21 +255,6 @@ func TestFxApplicationOutboxWorkerUsesClaimOneAfterStartup(t *testing.T) {
 		"LOG_LEVEL":                            "error",
 	} {
 		t.Setenv(key, value)
-	}
-
-	isolationPool, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	isolationTx, err := isolationPool.Begin(ctx)
-	if err != nil {
-		isolationPool.Close()
-		t.Fatal(err)
-	}
-	defer isolationPool.Close()
-	defer isolationTx.Rollback(ctx)
-	if _, err := isolationTx.Exec(ctx, `UPDATE outbox SET next_attempt_at=next_attempt_at`); err != nil {
-		t.Fatal(err)
 	}
 
 	writer, err := postgres.NewRepository(ctx, databaseURL)
@@ -320,7 +304,7 @@ func TestFxApplicationOutboxWorkerUsesClaimOneAfterStartup(t *testing.T) {
 
 	if err := eventuallyFx(ctx, func() (bool, error) {
 		received, receiveErr := api.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
-			QueueUrl:            queue.QueueUrl,
+			QueueUrl:            aws.String(queueURL),
 			MaxNumberOfMessages: 1,
 			WaitTimeSeconds:     1,
 		})
@@ -329,7 +313,7 @@ func TestFxApplicationOutboxWorkerUsesClaimOneAfterStartup(t *testing.T) {
 		}
 		for _, message := range received.Messages {
 			if strings.Contains(aws.ToString(message.Body), event.EventID.String()) {
-				if _, deleteErr := api.DeleteMessage(ctx, &awssqs.DeleteMessageInput{QueueUrl: queue.QueueUrl, ReceiptHandle: message.ReceiptHandle}); deleteErr != nil {
+				if _, deleteErr := api.DeleteMessage(ctx, &awssqs.DeleteMessageInput{QueueUrl: aws.String(queueURL), ReceiptHandle: message.ReceiptHandle}); deleteErr != nil {
 					return false, deleteErr
 				}
 				return true, nil
@@ -371,6 +355,58 @@ func createFxIntegrationQueue(ctx context.Context, t *testing.T, api *awssqs.Cli
 		}
 	})
 	return name, queueURL
+}
+
+func newFxIsolatedOutboxTestDatabaseURL(t *testing.T) string {
+	t.Helper()
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := "fx_outbox_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if _, err := admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		admin.Close()
+		t.Fatal(err)
+	}
+	dropSchema := func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := admin.Exec(cleanupCtx, "DROP SCHEMA "+schema+" CASCADE"); err != nil {
+			t.Logf("drop temporary PostgreSQL schema %q: %v", schema, err)
+		}
+		admin.Close()
+	}
+	if _, err := admin.Exec(ctx, "CREATE TABLE "+schema+".outbox (LIKE public.outbox INCLUDING ALL)"); err != nil {
+		dropSchema()
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(ctx, "CREATE SEQUENCE "+schema+".outbox_ordering_seq"); err != nil {
+		dropSchema()
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(ctx, "ALTER TABLE "+schema+".outbox ALTER COLUMN ordering_id SET DEFAULT nextval('"+schema+".outbox_ordering_seq'::regclass)"); err != nil {
+		dropSchema()
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(ctx, "ALTER SEQUENCE "+schema+".outbox_ordering_seq OWNED BY "+schema+".outbox.ordering_id"); err != nil {
+		dropSchema()
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		dropSchema()
+		t.Fatal(err)
+	}
+	query := parsed.Query()
+	query.Set("search_path", schema+",public")
+	parsed.RawQuery = query.Encode()
+	t.Cleanup(dropSchema)
+	return parsed.String()
 }
 
 func fxMessageBody(messageID, providerID, externalID, idempotencyKey, playerID string, walletID uuid.UUID) string {

@@ -52,10 +52,7 @@ func TestOutboxPublishesToRealLocalStackFIFO(t *testing.T) {
 	db := newOutboxTestDB(t)
 	defer db.Close()
 	eventID := insertOutboxTestEvent(t, db, time.Now().UTC())
-	cfg := config.Config{
-		AWSRegion: "us-east-1", AWSEndpointURL: endpoint, AWSAccessKeyID: "test", AWSSecretAccessKey: "test", SQSWagerQueue: "wager-transactions.fifo", SQSEventQueue: "wager-events.fifo",
-	}
-	client, err := sqsinfrastructure.NewClient(ctx, cfg)
+	client, err := newIsolatedOutboxSQSClient(t, ctx, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +157,7 @@ func TestWalletBalanceChangedWireContractAgainstRealLocalStack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, err := sqsinfrastructure.NewClient(ctx, config.Config{AWSRegion: "us-east-1", AWSEndpointURL: endpoint, AWSAccessKeyID: "test", AWSSecretAccessKey: "test", SQSEventQueue: "wager-events.fifo"})
+	client, err := newIsolatedOutboxSQSClient(t, ctx, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -175,10 +175,7 @@ func TestWorkerRetriesWithStableEventIDAndRecoversAbandonedClaim(t *testing.T) {
 }
 
 func TestTwoOutboxWorkersClaimOneRecordAcrossIndependentPools(t *testing.T) {
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("DATABASE_URL is not set")
-	}
+	databaseURL := newIsolatedOutboxTestDatabaseURL(t)
 	ctx := context.Background()
 	dbA, err := postgres.NewRepository(ctx, databaseURL)
 	if err != nil {
@@ -711,11 +708,7 @@ func setOutboxNextAttempt(t *testing.T, ctx context.Context, databaseURL string,
 
 func newOutboxTestDB(t *testing.T) *postgres.Repository {
 	t.Helper()
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("DATABASE_URL is not set")
-	}
-	db, err := postgres.NewRepository(context.Background(), databaseURL)
+	db, err := postgres.NewRepository(context.Background(), newIsolatedOutboxTestDatabaseURL(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -757,6 +750,11 @@ func newIsolatedOutboxTestDatabaseURL(t *testing.T) string {
 		admin.Close()
 		t.Fatal(err)
 	}
+	if _, err := admin.Exec(ctx, "ALTER SEQUENCE "+schema+".outbox_ordering_seq OWNED BY "+schema+".outbox.ordering_id"); err != nil {
+		_, _ = admin.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
+		admin.Close()
+		t.Fatal(err)
+	}
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {
 		_, _ = admin.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
@@ -767,7 +765,11 @@ func newIsolatedOutboxTestDatabaseURL(t *testing.T) string {
 	query.Set("search_path", schema+",public")
 	parsed.RawQuery = query.Encode()
 	t.Cleanup(func() {
-		_, _ = admin.Exec(context.Background(), "DROP SCHEMA "+schema+" CASCADE")
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := admin.Exec(cleanupCtx, "DROP SCHEMA "+schema+" CASCADE"); err != nil {
+			t.Logf("drop temporary PostgreSQL schema %q: %v", schema, err)
+		}
 		admin.Close()
 	})
 	return parsed.String()
